@@ -160,7 +160,9 @@ def _wmedian(x, w):
     return float(x[np.searchsorted(c, c[-1] / 2)])
 
 
-def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
+def project(P, counted, n_sims=N_SIMS, seed=7, extra=None, mode="blended"):
+    """mode "reactive": partial returns taken at face value (no shared early-count error, no trust ramp, loose prior on the national shift)."""
+    reactive = mode == "reactive"
     """counted: {fips: (D, R, pct_reporting)} or {fips: (D, R, pct_reporting, {bucket_key: (D, R)})}.
     A county with the 4th element has observed counts by vote method: the engine reads the buckets directly.
     A county without it falls back to inferring which methods have been counted (early first / proportional / late first)."""
@@ -265,7 +267,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
     # ballots (often Election Day, not yet reported) are treated as mostly unknown, so the deduced estimate carries more weight
     pcap_reg = np.clip((pcap - REG_TRUST_FLOOR) / (REG_FULL_TRUST - REG_TRUST_FLOOR), 0.03, 1.0)
     pcap_reg = np.where(pcap >= 0.995, 1.0, np.minimum(pcap_reg, np.where(pcap >= REG_FULL_TRUST, 1.0, 0.97)))
-    pcap_reg = np.where(madj, pcap, pcap_reg)        # municipality-adjusted states: the mix of counted places is known, so trust grows with the share counted
+    pcap_reg = np.where(madj | reactive, pcap, pcap_reg)        # municipality-adjusted states: the mix of counted places is known, so trust grows with the share counted
     v_reg = np.where(rep & ~has_m, samp + q * (1 - pcap_reg) / pcap_reg, 1e9)
     y_r = mo[None, :] - pred
     mob = np.where(nk > 0, 100 * (mk_R - mk_D) / np.maximum(nk, 1), 0.0)
@@ -281,6 +283,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
     Kb = P["K"] if rep.any() else P["K0"]
     sd0_sq = max(P["pre_sd"] ** 2 - float(P["share"] @ Kb @ P["share"]), (0.5 * P["pre_sd"]) ** 2)
     nth = 1 + (K if K > 1 else 0)
+    if reactive and rep.any(): sd0_sq *= 9.0          # returns-only: the 51-49 expectation barely holds the shift back
     prior_prec = np.array([1 / sd0_sq] + ([1 / BUCKET_SD ** 2] * K if K > 1 else []))
     tau = TAU_BASE
     ksc = 1.0
@@ -301,6 +304,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
                 cs.append(i); Xs.append(x); ys.append(yb[i, j]); vs.append(vb[i, j] / damp_[i])
         return np.array(cs, int), np.array(Xs), np.array(ys), np.array(vs)
     shw = np.where(madj, SHARED_EARLY_SD_ADJ, SHARED_EARLY_SD) * np.clip(1 - pcap / SHARED_EARLY_GONE, 0, 1) * rep
+    if reactive: shw = np.zeros(nC)
     damp = np.ones(nC)
     cs = np.zeros(0, int); Xs = np.zeros((0, nth)); ys = np.zeros(0); vs = np.zeros(0)
     for _ in range(4):
