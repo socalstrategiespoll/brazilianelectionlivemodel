@@ -199,11 +199,13 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
     # --- turnout recalibration ---
     ratio = np.ones(nC); w = np.minimum(1.0, p_eff / FULL_TRUST_PCT)
     g = 1.0
-    if rep.any():
-        impl = np.where(rep, n / np.maximum(p_eff, 1e-6), 0.0)
+    elig = rep & (p >= 0.05)          # Brazil fix: a state with a sliver counted says nothing about its turnout
+    if elig.any():
+        impl = np.where(elig, n / np.maximum(p_eff, 1e-6), 0.0)
         r_c = np.clip(impl / T, *TURNOUT_CLAMP)
-        g = _wmedian(r_c[rep], (T * w)[rep] + 1e-9)
-        ratio = np.where(rep, w * r_c + (1 - w) * g, g)
+        g = _wmedian(r_c[elig], (T * w)[elig] + 1e-9)
+        g = 1.0 + min(1.0, float((T * elig).sum() / T.sum()) / 0.2) * (g - 1.0)   # shared ratio phases in as the count grows
+        ratio = np.where(elig, w * r_c + (1 - w) * g, g)
     Tp = np.maximum(T * ratio, n)
     Tp = np.where(done, n, Tp)
     V = Tp[:, None] * P["sh"][None, :]                      # expected votes per bucket
