@@ -66,6 +66,9 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
 :root{--nodata:#e6e4df;--mid:#f1efe9}
 @media (prefers-color-scheme: dark){:root{--nodata:#2a2e36;--mid:#3a3d44}}
 .mappanel{margin-bottom:16px}
+.modelbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin-bottom:16px}
+.modelbar .desc{font-size:13px;color:var(--muted);flex:1;min-width:240px}
+.alt{font-size:13px;color:var(--muted);margin-top:6px}
 .maphead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 .maphead h2{margin:0}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -94,11 +97,17 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
     <div><span id="chip" class="chip">Loading</span> <span id="upd" class="sub"></span></div>
   </header>
 
+  <div class="modelbar">
+    <div class="seg" id="modelseg"><button data-model="blended" class="on">Blended model</button><button data-model="reactive">Returns only</button></div>
+    <div class="desc" id="modeldesc"></div>
+  </div>
+
   <section class="hero">
     <div class="panel">
       <div class="label">Projected two-way margin</div>
       <div id="big" class="big">…</div>
       <div id="range" class="range"></div>
+      <div id="alt" class="alt"></div>
       <div class="strip" id="strip"><div class="axis"></div></div>
       <div id="call" class="call"></div>
     </div>
@@ -118,7 +127,7 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
   <section class="panel mappanel">
     <div class="maphead">
       <div style="display:flex;gap:10px;align-items:center"><button class="back" id="back">&larr; Brazil</button><h2 id="maptitle">Map</h2></div>
-      <div class="seg"><button data-m="projected" class="on">Projected</button><button data-m="counted">Counted so far</button><button data-m="swing">Swing</button></div>
+      <div class="seg" id="mapseg"><button data-m="projected" class="on">Projected</button><button data-m="counted">Counted so far</button><button data-m="swing">Swing</button></div>
     </div>
     <div id="map"><div id="tip"></div></div>
     <div class="lg" id="lg"></div>
@@ -152,6 +161,10 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
 const API = (window.API_BASE || "").replace(/\/$/, "");
 const UF = {AC:"Acre",AL:"Alagoas",AP:"Amapá",AM:"Amazonas",BA:"Bahia",CE:"Ceará",DF:"Distrito Federal",ES:"Espírito Santo",GO:"Goiás",MA:"Maranhão",MT:"Mato Grosso",MS:"Mato Grosso do Sul",MG:"Minas Gerais",PR:"Paraná",PB:"Paraíba",PA:"Pará",PE:"Pernambuco",PI:"Piauí",RJ:"Rio de Janeiro",RN:"Rio Grande do Norte",RS:"Rio Grande do Sul",RO:"Rondônia",RR:"Roraima",SC:"Santa Catarina",SE:"Sergipe",SP:"São Paulo",TO:"Tocantins",ZZ:"Abroad"};
 let states = [], sortK = "size", sortDir = -1, selUF = null, munis = [];
+const DESC = {blended: "Blends partial returns with pre-election expectations. Early counts are discounted until states fill in.",
+              reactive: "Takes each state's returns at face value from the first ballot, with almost no pull toward the pre-election expectation."};
+let model = "blended"; try { if (localStorage.getItem("brModel") === "reactive") model = "reactive"; } catch (e) {}
+const mq = () => model === "reactive" ? "?model=reactive" : "";
 const $ = id => document.getElementById(id);
 function mg(m, short){
   if (m === null || m === undefined || isNaN(m)) return "<span class='sub'>·</span>";
@@ -176,7 +189,7 @@ function drawStrip(pc){
 
 async function refresh(){
   try{
-    const [p, s] = await Promise.all([getJSON("/api/projection"), getJSON("/api/states")]);
+    const [p, s] = await Promise.all([getJSON("/api/projection" + mq()), getJSON("/api/states" + mq())]);
     $("err").textContent = "";
     if (!p.updated){ $("chip").textContent = "Starting"; return; }
     const mode = p.mode;
@@ -186,6 +199,8 @@ async function refresh(){
     $("upd").textContent = "Feed checked " + hm(p.checked || p.updated) + " UTC" + (mode !== "pre" ? " · model rerun " + hm(p.updated) : "") + (p.feed_error ? " · feed error" : "");
     $("big").innerHTML = mg(p.margin);
     $("range").innerHTML = `90% range: ${mg(p.p05)} to ${mg(p.p95)}`;
+    const other = model === "reactive" ? "blended" : "reactive", om = p.models && p.models[other];
+    $("alt").innerHTML = om ? `${other === "reactive" ? "Returns-only" : "Blended"} model: ${mg(om.margin)} &middot; Flávio ${(100 * (om.win_prob_flavio ?? .5)).toFixed(1)}%` : "";
     const w = p.win_prob_flavio ?? 0.5, wf = Math.round(1000 * w) / 10, wl = Math.round(1000 * (1 - w)) / 10;
     $("pf").style.width = Math.max(wf, 6) + "%"; $("pl").style.width = Math.max(wl, 6) + "%";
     $("pf").textContent = (wf >= 99.9 ? ">99.9" : wf <= 0.1 ? "<0.1" : wf.toFixed(1)) + "%";
@@ -216,7 +231,7 @@ $("q").addEventListener("input", drawMunis);
 
 async function loadMunis(uf, quiet){
   if (uf === "ZZ"){ $("mtitle").textContent = "Abroad has no municipality breakdown"; munis = []; drawMunis(); return; }
-  try{ const d = await getJSON("/api/munis/" + uf); munis = d.rows || []; $("mtitle").textContent = "Municipalities · " + (UF[uf] || uf); drawMunis(); }
+  try{ const d = await getJSON("/api/munis/" + uf + mq()); munis = d.rows || []; $("mtitle").textContent = "Municipalities · " + (UF[uf] || uf); drawMunis(); }
   catch(e){ if (!quiet){ munis = []; $("mtitle").textContent = "Municipalities · " + (UF[uf] || uf) + " (not available yet)"; drawMunis(); } }
 }
 function drawMunis(){
@@ -320,9 +335,13 @@ async function openState(uf){
   mapUF = uf; await loadMunis(uf); drawMap();
 }
 $("back").addEventListener("click", () => { mapUF = null; drawMap(); });
-document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
-  document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("on", x === b)); mapMode = b.dataset.m; recolor(); }));
+document.querySelectorAll("#mapseg button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#mapseg button").forEach(x => x.classList.toggle("on", x === b)); mapMode = b.dataset.m; recolor(); }));
 
+function setModel(m){ model = m; try { localStorage.setItem("brModel", m); } catch (e) {}
+  document.querySelectorAll("#modelseg button").forEach(x => x.classList.toggle("on", x.dataset.model === m)); $("modeldesc").textContent = DESC[m]; refresh(); }
+document.querySelectorAll("#modelseg button").forEach(b => b.addEventListener("click", () => setModel(b.dataset.model)));
+document.querySelectorAll("#modelseg button").forEach(x => x.classList.toggle("on", x.dataset.model === model)); $("modeldesc").textContent = DESC[model];
 refresh(); setInterval(refresh, 20000);
 </script>
 </body>
