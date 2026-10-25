@@ -27,7 +27,7 @@ def cycle(race, P, last):
         STATE["feed_pct"] = payload.get("percent_reporting"); STATE["feed_updated"] = payload.get("last_updated")
         live_munis = {}
         if BASE:
-            with ThreadPoolExecutor(8) as ex:
+            with ThreadPoolExecutor(14) as ex:
                 got = dict(zip(STATE_RACE, ex.map(lambda rid: _safe(rid), STATE_RACE.values())))
             rows = {c[0]: c for c in race["counties"]}
             for uf, d in got.items():
@@ -42,9 +42,14 @@ def cycle(race, P, last):
                 n = st[0] + st[1]; sraw = 100 * (st[0] - st[1]) / n
                 # civicAPI's municipality rows run behind the state row (about half the votes). Use them as a sample of how
                 # unrepresentative the counted vote is (mix-adjusted minus raw, over the municipalities in) and apply that to the newer state total.
-                if adj_m is None or nm < 0.25 * n or nm < 500:
+                if adj_m is None or nm < 300:
                     counted[key] = (st[1], st[0], st[2]); STATE["muni_status"][uf] = "state row only (municipalities cover %.0f%%)" % (100 * nm / n); continue
-                adj = max(-99.0, min(99.0, sraw + (adj_m - raw_m)))
+                cov = nm / n; wcor = 1.0      # the correction depends on which places are in, not on vote sampling, so a thin sample still measures it
+                adj = max(-99.0, min(99.0, sraw + wcor * (adj_m - raw_m)))
+                if cov < 0.25:      # corrected, but not trusted enough for the smaller shared early-count error
+                    counted[key] = (n * (1 - adj / 100) / 2, n * (1 + adj / 100) / 2, st[2])
+                    STATE["muni_status"][uf] = "thin: state raw %+.1f, adjusted %+.1f (municipal rows %.0f%% of state votes)" % (sraw, adj, 100 * cov)
+                    continue
                 counted[key] = (n * (1 - adj / 100) / 2, n * (1 + adj / 100) / 2, st[2], None, None, True)
                 STATE["muni_status"][uf] = "ok: state raw %+.1f, adjusted %+.1f (municipal rows: raw %+.1f, mix-adjusted %+.1f, %d places, %.0f%% of state votes)%s" % (
                     sraw, adj, raw_m, adj_m, len(ms), 100 * nm / n, (", %d unmatched" % len(miss)) if miss else "")
@@ -82,9 +87,14 @@ def cycle(race, P, last):
     return key
 
 
+LAST_GOOD = {}   # race id -> (time, payload): a state whose page fails to load keeps its last good copy
 def _safe(rid):
-    try: return muni.fetch(rid)
-    except Exception: return None
+    try:
+        d = muni.fetch(rid, timeout=45, tries=2)
+        LAST_GOOD[rid] = (time.time(), d); return d
+    except Exception:
+        hit = LAST_GOOD.get(rid)
+        return hit[1] if hit else None
 
 def _munis(res, live, race):
     rows = {c[0]: c for c in race["counties"]}; states = []; out = {}
