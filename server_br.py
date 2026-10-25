@@ -38,13 +38,16 @@ def cycle(race, P, last):
                 if st is None or r is None or st[0] + st[1] <= 0:
                     STATE["muni_status"][uf] = "no votes yet"; continue
                 bm = 100 * (r[3] - r[2]) / max(r[2] + r[3], 1)
-                adj, raw, nm = muni.mix_adjusted(bm, ms, BASE[uf])
-                n = st[0] + st[1]
-                if adj is None or nm < 0.8 * n:    # municipality rows cover too little of the state count: use the state row as is
+                adj_m, raw_m, nm = muni.mix_adjusted(bm, ms, BASE[uf])
+                n = st[0] + st[1]; sraw = 100 * (st[0] - st[1]) / n
+                # civicAPI's municipality rows run behind the state row (about half the votes). Use them as a sample of how
+                # unrepresentative the counted vote is (mix-adjusted minus raw, over the municipalities in) and apply that to the newer state total.
+                if adj_m is None or nm < 0.25 * n or nm < 500:
                     counted[key] = (st[1], st[0], st[2]); STATE["muni_status"][uf] = "state row only (municipalities cover %.0f%%)" % (100 * nm / n); continue
-                adj = max(-99.0, min(99.0, adj))
+                adj = max(-99.0, min(99.0, sraw + (adj_m - raw_m)))
                 counted[key] = (n * (1 - adj / 100) / 2, n * (1 + adj / 100) / 2, st[2], None, None, True)
-                STATE["muni_status"][uf] = "ok: raw %+.1f, mix-adjusted %+.1f, %d places in%s" % (raw, adj, len(ms), (", %d unmatched" % len(miss)) if miss else "")
+                STATE["muni_status"][uf] = "ok: state raw %+.1f, adjusted %+.1f (municipal rows: raw %+.1f, mix-adjusted %+.1f, %d places, %.0f%% of state votes)%s" % (
+                    sraw, adj, raw_m, adj_m, len(ms), 100 * nm / n, (", %d unmatched" % len(miss)) if miss else "")
         counted, w = civicapi_feed.sanitize(counted, race, MEM)
         counted = civicapi_feed.pct_from_votes(dict(counted), dict(race, pct_from_votes=True))   # feed shows 0% with votes in: use votes / expected
         STATE["warn"] = w
