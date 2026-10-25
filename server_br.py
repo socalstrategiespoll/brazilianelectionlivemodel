@@ -13,6 +13,8 @@ POLL = int(os.environ.get("POLL_SECONDS", "30"))
 OUT = os.path.join(HERE, "projection.json")
 LOCK = threading.Lock()
 STATE = {"projection": {"updated": None, "mode": "starting"}, "detail": None, "warn": [], "error": None, "munis": {}, "states": [], "muni_status": {}}
+MODELS = ("blended", "reactive")
+VIEW = {m: {"projection": {"updated": None, "mode": "starting"}, "detail": None, "states": [], "munis": {}} for m in MODELS}
 BASE = {}      # {UF: {muni: [L, F]}} first-round runoff baseline, built at startup
 STATE_RACE = {}  # UF -> runoff state race id
 MEM = {}
@@ -52,22 +54,28 @@ def cycle(race, P, last):
             STATE["error"] = err; return last
     key = hashlib.md5(json.dumps(counted, sort_keys=True).encode()).hexdigest()
     if key != last or STATE["detail"] is None:
-        res = engine.project(P, counted)
+        for model in MODELS:
+            res = engine.project(P, counted, mode=model)
+            proj = {"updated": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()), "mode": res["state"], "model": model,
+                    "label": "Brazil President, runoff", "margin_def": "Flavio minus Lula, two-way, points",
+                    "margin": res["margin"], "p05": res["p05"], "p25": res["p25"], "p75": res["p75"], "p95": res["p95"],
+                    "win_prob_flavio": res["win_prob_R"], "reporting": res["reporting"], "call_ready": res["call_ready"],
+                    "shift_vs_baseline": res["shift"], "states_in": sum(1 for c in res["counties"] if c[3] > 0),
+                    "feed_pct_reporting": STATE.get("feed_pct"), "percentiles": res["percentiles"]}
+            states, munis = _munis(res, live_munis if BASE else {}, race)
+            with LOCK:
+                VIEW[model].update(projection=proj, detail=res, states=states, munis=munis)
         with LOCK:
-            STATE["detail"] = res
-            STATE["projection"] = {"updated": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()), "mode": res["state"],
-                                   "label": "Brazil President, runoff", "margin_def": "Flavio minus Lula, two-way, points",
-                                   "margin": res["margin"], "p05": res["p05"], "p25": res["p25"], "p75": res["p75"], "p95": res["p95"],
-                                   "win_prob_flavio": res["win_prob_R"], "reporting": res["reporting"], "call_ready": res["call_ready"],
-                                   "shift_vs_baseline": res["shift"], "states_in": sum(1 for c in res["counties"] if c[3] > 0),
-                                   "feed_pct_reporting": STATE.get("feed_pct"), "percentiles": res["percentiles"]}
-        _munis(res, live_munis if BASE else {}, race)
+            STATE["detail"] = VIEW["blended"]["detail"]; STATE["projection"] = VIEW["blended"]["projection"]
+            STATE["states"] = VIEW["blended"]["states"]; STATE["munis"] = VIEW["blended"]["munis"]
+            both = {m: {k: VIEW[m]["projection"][k] for k in ("margin", "p05", "p95", "win_prob_flavio")} for m in MODELS}
+            for m in MODELS: VIEW[m]["projection"]["models"] = both
         with open(OUT + ".tmp", "w") as f: json.dump(STATE["projection"], f, separators=(",", ":"))
         os.replace(OUT + ".tmp", OUT)
     STATE["error"] = err
     with LOCK:
-        STATE["projection"]["checked"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())   # every cycle, even when no new votes
-        STATE["projection"]["feed_error"] = err
+        now = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())   # every cycle, even when no new votes
+        for m in MODELS: VIEW[m]["projection"]["checked"] = now; VIEW[m]["projection"]["feed_error"] = err
     return key
 
 
@@ -86,7 +94,7 @@ def _munis(res, live, race):
         uf = fips[3:]
         if uf in BASE:
             out[uf] = muni.project_munis(BASE[uf], live.get(uf, {}), r, (n + rem) / max(T, 1), swing)
-    STATE["states"] = states; STATE["munis"] = out
+    return states, out
 
 def init_munis(race):
     """Build the municipality baseline and the UF -> runoff race map. Failures leave the model on state rows only."""
@@ -126,16 +134,19 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         p = self.path.split("?")[0]
-        if p == "/health": return self._send(200, {"ok": True, "updated": STATE["projection"]["updated"], "checked": STATE["projection"].get("checked")})
+        q = self.path.split("?", 1)[1] if "?" in self.path else ""
+        model = "reactive" if "model=reactive" in q else "blended"
+        V = VIEW[model]
+        if p == "/health": return self._send(200, {"ok": True, "updated": V["projection"]["updated"], "checked": V["projection"].get("checked")})
         if p == "/api/projection":
-            with LOCK: return self._send(200, STATE["projection"])
+            with LOCK: return self._send(200, V["projection"])
         if p == "/api/race":
-            with LOCK: return self._send(200, STATE["detail"] or {})
+            with LOCK: return self._send(200, V["detail"] or {})
         if p == "/api/states":
-            with LOCK: return self._send(200, {"updated": STATE["projection"]["updated"], "states": STATE["states"]})
+            with LOCK: return self._send(200, {"updated": V["projection"]["updated"], "model": model, "states": V["states"]})
         if p.startswith("/api/munis/"):
             uf = p.rsplit("/", 1)[1].upper()
-            with LOCK: rows = STATE["munis"].get(uf)
+            with LOCK: rows = V["munis"].get(uf)
             return self._send(200 if rows is not None else 404, {"uf": uf, "columns": ["name", "pct_in", "counted", "remaining", "projected_margin", "counted_margin", "baseline_margin"], "rows": rows} if rows is not None else {"error": "unknown state"})
         if p == "/api/status": return self._send(200, {"feed_error": STATE["error"], "guard_warnings": STATE["warn"], "feed_updated": STATE.get("feed_updated"), "municipalities": STATE["muni_status"], "baseline_places": sum(len(v) for v in BASE.values())})
         self._send(404, {"error": "not found"})
