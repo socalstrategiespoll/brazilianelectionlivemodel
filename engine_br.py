@@ -435,7 +435,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None, mode="blended"):
         cm = float(100 * (cR[i] - cD[i]) / n[i]) if n[i] > 0 else None
         # [fips, name, pct in, counted, remaining, projected final margin, has method data, county swing,
         #  counted D, counted R, projected margin of remaining votes, margin of counted votes]
-        counties.append([P["fips"][i], P["names"][i], round(float(p_eff[i]), 3), int(n[i]), int(rem[i]),
+        counties.append([P["fips"][i], P["names"][i], round(float(p[i] if rep[i] and p[i] > 0 else p_eff[i]), 4), int(n[i]), int(rem[i]),
                          None if pm is None else round(pm, 2), bool(has_m[i]), round(float(Uc_mean[i]), 2),
                          int(cD[i]), int(cR[i]), None if rmm is None else round(rmm, 2), None if cm is None else round(cm, 2)])
     state = "complete" if (rep.sum() == nC and done.all()) else ("counting" if rep.any() else "pre")
