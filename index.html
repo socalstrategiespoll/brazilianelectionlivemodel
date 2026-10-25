@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
 <style>
 :root{
   --bg:#f6f5f2; --panel:#ffffff; --ink:#16181d; --muted:#6b6f78; --line:#e3e1dc;
@@ -62,6 +63,25 @@ tr.sel{background:var(--flavio-soft)}
 input[type=search]{width:100%;max-width:280px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;margin-bottom:10px}
 .err{color:var(--lula);font-size:13px;margin-top:8px}
 footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
+:root{--nodata:#e6e4df;--mid:#f1efe9}
+@media (prefers-color-scheme: dark){:root{--nodata:#2a2e36;--mid:#3a3d44}}
+.mappanel{margin-bottom:16px}
+.maphead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.maphead h2{margin:0}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{font:inherit;font-size:13px;border:0;background:var(--panel);color:var(--muted);padding:5px 12px;cursor:pointer}
+.seg button.on{background:var(--ink);color:var(--panel)}
+.back{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:5px 10px;cursor:pointer;display:none}
+#map{position:relative;width:100%;max-width:760px;margin:0 auto}
+#map svg{width:100%;height:auto;display:block}
+#map path{stroke:var(--panel);stroke-width:.6;cursor:pointer;transition:fill .4s}
+#map path:hover{stroke:var(--ink);stroke-width:1.4}
+#tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.12);display:none;white-space:nowrap;z-index:5}
+#tip b{display:block;margin-bottom:2px}
+.lg{display:flex;align-items:center;gap:8px;justify-content:center;font-size:12px;color:var(--muted);margin-top:6px}
+.lg .grad{width:220px;height:10px;border-radius:5px}
+.mapnote{text-align:center;font-size:12px;color:var(--muted);margin-top:4px}
+
 </style>
 </head>
 <body>
@@ -93,6 +113,16 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
       </div>
       <div id="err" class="err"></div>
     </div>
+  </section>
+
+  <section class="panel mappanel">
+    <div class="maphead">
+      <div style="display:flex;gap:10px;align-items:center"><button class="back" id="back">&larr; Brazil</button><h2 id="maptitle">Map</h2></div>
+      <div class="seg"><button data-m="projected" class="on">Projected</button><button data-m="counted">Counted so far</button><button data-m="swing">Swing</button></div>
+    </div>
+    <div id="map"><div id="tip"></div></div>
+    <div class="lg" id="lg"></div>
+    <div class="mapnote" id="mapnote">Click a state to see its municipalities.</div>
   </section>
 
   <div class="grid2">
@@ -168,7 +198,8 @@ async function refresh(){
     drawStrip(p.percentiles);
     states = (s.states || []).map(r => ({...r, size: r.counted + r.remaining}));
     drawStates();
-    if (selUF) loadMunis(selUF, true);
+    if (selUF) await loadMunis(selUF, true);
+    drawMap();
   }catch(e){ $("err").textContent = "Could not reach the model server (" + e.message + "). Retrying."; }
 }
 
@@ -180,7 +211,7 @@ function drawStates(){
   }).join("");
 }
 $("st").querySelector("thead").addEventListener("click", e => { const k = e.target.dataset.k; if (!k) return; sortDir = sortK === k ? -sortDir : (k === "name" ? 1 : -1); sortK = k; drawStates(); });
-$("st").querySelector("tbody").addEventListener("click", e => { const tr = e.target.closest("tr"); if (!tr) return; selUF = tr.dataset.uf; drawStates(); loadMunis(selUF); });
+$("st").querySelector("tbody").addEventListener("click", e => { const tr = e.target.closest("tr"); if (!tr) return; selUF = tr.dataset.uf; drawStates(); openState(selUF); });
 $("q").addEventListener("input", drawMunis);
 
 async function loadMunis(uf, quiet){
@@ -195,6 +226,103 @@ function drawMunis(){
   $("mt").querySelector("tbody").innerHTML = shown.map(r => `<tr><td>${r[0]}</td><td class="mono">${pct(r[1])}</td><td>${mg(r[5])}</td><td>${mg(r[4])}</td><td>${mg(r[6])}</td><td class="mono">${num(r[2] + r[3])}</td></tr>`).join("");
   $("mnote").textContent = rows.length > 200 ? `Showing the 200 largest of ${rows.length}. Search to find others.` : "";
 }
+
+// ---------- map ----------
+const IBGE = {AC:12,AL:27,AP:16,AM:13,BA:29,CE:23,DF:53,ES:32,GO:52,MA:21,MT:51,MS:50,MG:31,PR:41,PB:25,PA:15,PE:26,PI:22,RJ:33,RN:24,RS:43,RO:11,RR:14,SC:42,SE:28,SP:35,TO:17};
+const STATES_URL = "https://cdn.jsdelivr.net/gh/codeforgermany/click_that_hood@main/public/data/brazil-states.geojson";
+const MUN_URL = c => `https://cdn.jsdelivr.net/gh/tbrugz/geodata-br@master/geojson/geojs-${c}-mun.json`;
+let geoStates = null, geoMun = {}, mapMode = "projected", mapUF = null, drawnKey = null, munMatch = {};
+const W = 640, H = 600;
+const norm = s => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z]/g, "");
+function lev(a, b){ const d = Array.from({length: a.length + 1}, (_, i) => [i]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1)); return d[a.length][b.length]; }
+function cssv(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function colorFor(m, scale){
+  if (m === null || m === undefined || isNaN(m)) return cssv("--nodata");
+  const t = Math.max(-1, Math.min(1, m / scale)), k = Math.pow(Math.abs(t), 0.75);
+  return d3.interpolateRgb(cssv("--mid"), t >= 0 ? cssv("--flavio") : cssv("--lula"))(k);
+}
+function scaleFor(){ return mapMode === "swing" ? 10 : 50; }
+function legend(){
+  const sc = scaleFor(), stops = d3.range(-1, 1.001, 0.1).map(t => colorFor(t * sc, sc)).join(",");
+  $("lg").innerHTML = `<span class="l">Lula +${sc}</span><span class="grad" style="background:linear-gradient(90deg,${stops})"></span><span class="f">Flávio +${sc}</span>`;
+}
+async function loadJSON(u){ const r = await fetch(u); if (!r.ok) throw new Error(r.status); return rewind(await r.json()); }
+// d3 wants rings wound the opposite way from the GeoJSON spec; flip any polygon that would otherwise cover the globe
+function rewind(fc){
+  const fixPoly = rings => d3.geoArea({type: "Polygon", coordinates: rings}) > 2 * Math.PI ? rings.map(r => r.slice().reverse()) : rings;
+  (fc.features || []).forEach(f => { const g = f.geometry; if (!g) return;
+    if (g.type === "Polygon") g.coordinates = fixPoly(g.coordinates);
+    else if (g.type === "MultiPolygon") g.coordinates = g.coordinates.map(fixPoly); });
+  return fc;
+}
+function stateRow(uf){ return states.find(r => r.id === "BR_" + uf); }
+function valueOfState(r){ if (!r) return null; return mapMode === "projected" ? r.projected_margin : mapMode === "counted" ? r.counted_margin : (r.counted ? r.swing : null); }
+function valueOfMuni(row){ if (!row) return null; if (mapMode === "projected") return row[4]; if (mapMode === "counted") return row[5]; return row[2] > 0 && row[5] !== null ? row[5] - row[6] : null; }
+function matchMunis(uf, feats){
+  // feature -> municipality name, worked out once per state (exact normalized name, then closest spelling); rows are looked up fresh each refresh
+  let names = munMatch[uf];
+  if (!names){
+    const byKey = {}; munis.forEach(r => byKey[norm(r[0])] = r[0]);
+    names = new Map(); const used = new Set(), left = [];
+    feats.forEach(f => { const n = byKey[norm(f.properties.name)]; if (n){ names.set(f, n); used.add(n); } else left.push(f); });
+    const rest = munis.map(r => r[0]).filter(n => !used.has(n));
+    left.forEach(f => { const k = norm(f.properties.name); let best = null, bd = 4;
+      rest.forEach(n => { const d = lev(k, norm(n)); if (d < bd){ bd = d; best = n; } });
+      if (best){ names.set(f, best); rest.splice(rest.indexOf(best), 1); } });
+    if (munis.length) munMatch[uf] = names;
+  }
+  const byName = {}; munis.forEach(r => byName[r[0]] = r);
+  return {size: names.size, get: f => byName[names.get(f)]};
+}
+function tipHTML(name, pIn, cnt, proj, base){
+  return `<b>${name}</b>Projected ${mg(proj)}<br>Counted ${mg(cnt)} &middot; ${pct(pIn)} in<br><span class="sub">Baseline ${mg(base)}</span>`;
+}
+function render(features, getVal, getTip, onClick){
+  const box = $("map"); box.querySelector("svg")?.remove();
+  const fc = {type: "FeatureCollection", features};
+  const proj = d3.geoMercator().fitSize([W, H], fc), path = d3.geoPath(proj);
+  const svg = d3.select(box).insert("svg", "#tip").attr("viewBox", `0 0 ${W} ${H}`);
+  const tip = $("tip");
+  svg.selectAll("path").data(features).join("path").attr("d", path)
+    .on("mousemove", (ev, f) => { tip.innerHTML = getTip(f); tip.style.display = "block"; const rc = box.getBoundingClientRect();
+      let x = ev.clientX - rc.left + 14, y = ev.clientY - rc.top + 14; if (x + tip.offsetWidth > rc.width) x -= tip.offsetWidth + 28; tip.style.left = x + "px"; tip.style.top = y + "px"; })
+    .on("mouseleave", () => tip.style.display = "none")
+    .on("click", (ev, f) => { tip.style.display = "none"; onClick && onClick(f); });
+  box._getVal = getVal; recolor();
+}
+function recolor(){ const box = $("map"), sc = scaleFor(); if (!box._getVal) return; d3.select(box).selectAll("path").attr("fill", f => colorFor(box._getVal(f), sc)); legend(); }
+async function drawMap(){
+  try{
+    if (!mapUF){
+      if (!geoStates){ $("mapnote").textContent = "Loading map…"; geoStates = await loadJSON(STATES_URL); }
+      $("maptitle").textContent = "Brazil by state"; $("back").style.display = "none";
+      $("mapnote").textContent = "Click a state to see its municipalities.";
+      if (drawnKey !== "BR") { render(geoStates.features, f => valueOfState(stateRow(f.properties.sigla)),
+        f => { const r = stateRow(f.properties.sigla); return r ? tipHTML(r.name, r.pct_in, r.counted_margin, r.projected_margin, r.baseline_margin) : f.properties.name; },
+        f => { selUF = f.properties.sigla; drawStates(); openState(selUF); }); drawnKey = "BR"; }
+      else recolor();
+    } else {
+      const uf = mapUF;
+      if (!geoMun[uf]){ $("mapnote").textContent = "Loading municipalities…"; geoMun[uf] = await loadJSON(MUN_URL(IBGE[uf])); }
+      if (mapUF !== uf) return;
+      $("maptitle").textContent = UF[uf] + " by municipality"; $("back").style.display = "inline-block";
+      const m = matchMunis(uf, geoMun[uf].features);
+      $("mapnote").textContent = `${m.size} of ${geoMun[uf].features.length} shapes matched to results. Grey means no data yet.`;
+      if (drawnKey !== uf) { render(geoMun[uf].features, f => valueOfMuni(m.get(f)),
+        f => { const r = m.get(f); return r ? tipHTML(r[0], r[1], r[5], r[4], r[6]) : f.properties.name; }, null); drawnKey = uf; }
+      else { $("map")._getVal = f => valueOfMuni(m.get(f)); recolor(); }
+    }
+  }catch(e){ $("mapnote").textContent = "Map could not load (" + e.message + ")."; }
+}
+async function openState(uf){
+  if (uf === "ZZ"){ await loadMunis(uf); return; }
+  mapUF = uf; await loadMunis(uf); drawMap();
+}
+$("back").addEventListener("click", () => { mapUF = null; drawMap(); });
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("on", x === b)); mapMode = b.dataset.m; recolor(); }));
+
 refresh(); setInterval(refresh, 20000);
 </script>
 </body>
