@@ -25,7 +25,7 @@ def cycle(race, P, last):
         payload = civicapi_feed.fetch(RACE_ID)
         counted = civicapi_feed.parse_counties(payload, race)          # state rows from the national race (and Abroad)
         STATE["feed_pct"] = payload.get("percent_reporting"); STATE["feed_updated"] = payload.get("last_updated")
-        live_munis = {}
+        live_munis = {}; raw_rows = {}
         if BASE:
             with ThreadPoolExecutor(14) as ex:
                 got = dict(zip(STATE_RACE, ex.map(lambda rid: _safe(rid), STATE_RACE.values())))
@@ -39,7 +39,7 @@ def cycle(race, P, last):
                     STATE["muni_status"][uf] = "no votes yet"; continue
                 bm = 100 * (r[3] - r[2]) / max(r[2] + r[3], 1)
                 adj_m, raw_m, nm = muni.mix_adjusted(bm, ms, BASE[uf])
-                n = st[0] + st[1]; sraw = 100 * (st[0] - st[1]) / n
+                n = st[0] + st[1]; sraw = 100 * (st[0] - st[1]) / n; raw_rows[key] = round(sraw, 2)
                 # civicAPI's municipality rows run behind the state row (about half the votes). Use them as a sample of how
                 # unrepresentative the counted vote is (mix-adjusted minus raw, over the municipalities in) and apply that to the newer state total.
                 if adj_m is None or nm < 300:
@@ -53,6 +53,9 @@ def cycle(race, P, last):
                 counted[key] = (n * (1 - adj / 100) / 2, n * (1 + adj / 100) / 2, st[2], None, None, True)
                 STATE["muni_status"][uf] = "ok: state raw %+.1f, adjusted %+.1f (municipal rows: raw %+.1f, mix-adjusted %+.1f, %d places, %.0f%% of state votes)%s" % (
                     sraw, adj, raw_m, adj_m, len(ms), 100 * nm / n, (", %d unmatched" % len(miss)) if miss else "")
+        for f, v in counted.items():          # states without municipality handling: the raw count is what was passed in
+            if f not in raw_rows and v[0] + v[1] > 0: raw_rows[f] = round(100 * (v[1] - v[0]) / (v[0] + v[1]), 2)
+        STATE["raw"] = raw_rows
         counted, w = civicapi_feed.sanitize(counted, race, MEM)
         counted = civicapi_feed.pct_from_votes(dict(counted), dict(race, pct_from_votes=True))   # feed shows 0% with votes in: use votes / expected
         STATE["warn"] = w
@@ -103,7 +106,9 @@ def _munis(res, live, race):
         r = rows[fips]; T = r[2] + r[3]; bm = 100 * (r[3] - r[2]) / max(T, 1)
         rmm = c[10]; swing = (rmm - bm) if rmm is not None else ((pm - bm) if pm is not None else 0.0)
         states.append({"id": fips, "name": name, "pct_in": p, "counted": n, "remaining": rem, "projected_margin": pm,
-                       "counted_margin": c[11], "baseline_margin": round(bm, 2), "swing": round(swing, 2)})
+                       "counted_margin": STATE.get("raw", {}).get(fips) if n else None,      # raw count, as civicAPI shows it
+                       "adjusted_margin": c[11],                                              # counted margin after the municipality-mix correction
+                       "baseline_margin": round(bm, 2), "swing": round(swing, 2)})
         uf = fips[3:]
         if uf in BASE:
             out[uf] = muni.project_munis(BASE[uf], live.get(uf, {}), r, (n + rem) / max(T, 1), swing)
