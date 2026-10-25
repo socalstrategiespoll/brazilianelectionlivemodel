@@ -1,0 +1,194 @@
+{
+ "races": [
+  {
+   "id": "BR2026PRES2",
+   "label": "BR-Pres",
+   "state": "BR",
+   "type": "President",
+   "rep": "Flávio Bolsonaro",
+   "other": "Luiz Inácio Lula da Silva",
+   "name_match": true,
+   "method": "First-round state results (civicAPI 130870) with other candidates' votes allocated to reach Flavio 51 / Lula 49. Shares to Flavio: Cury 40%, Renan 59%, Caiado 59%, Zema 67%, Samara 10%, Hertz 10%, Clariana 52%, Edmilson 10%, Wilson 45%, Rui 10%",
+   "alloc": {
+    "cury": 0.3976,
+    "renan": 0.5871,
+    "caiado": 0.5871,
+    "zema": 0.6682,
+    "oright": 0.4974,
+    "left": 0.1
+   },
+   "headline": 2.0,
+   "margin": 2.0,
+   "counties": [
+    [
+     "BR_AC",
+     "Acre",
+     150584,
+     318482
+    ],
+    [
+     "BR_AL",
+     "Alagoas",
+     1040735,
+     778121
+    ],
+    [
+     "BR_AP",
+     "Amapá",
+     233025,
+     231833
+    ],
+    [
+     "BR_AM",
+     "Amazonas",
+     1123334,
+     1047071
+    ],
+    [
+     "BR_BA",
+     "Bahia",
+     5892630,
+     2667661
+    ],
+    [
+     "BR_CE",
+     "Ceará",
+     3710894,
+     1906920
+    ],
+    [
+     "BR_DF",
+     "Distrito Federal",
+     763356,
+     1009452
+    ],
+    [
+     "BR_ES",
+     "Espírito Santo",
+     932893,
+     1318185
+    ],
+    [
+     "BR_GO",
+     "Goiás",
+     1443064,
+     2384759
+    ],
+    [
+     "BR_MA",
+     "Maranhão",
+     2667909,
+     1341638
+    ],
+    [
+     "BR_MT",
+     "Mato Grosso",
+     637011,
+     1356277
+    ],
+    [
+     "BR_MS",
+     "Mato Grosso do Sul",
+     566492,
+     923786
+    ],
+    [
+     "BR_MG",
+     "Minas Gerais",
+     5685184,
+     6291051
+    ],
+    [
+     "BR_PR",
+     "Paraná",
+     2339362,
+     4245881
+    ],
+    [
+     "BR_PB",
+     "Paraíba",
+     1614734,
+     899013
+    ],
+    [
+     "BR_PA",
+     "Pará",
+     2566013,
+     2297159
+    ],
+    [
+     "BR_PE",
+     "Pernambuco",
+     3709586,
+     1891431
+    ],
+    [
+     "BR_PI",
+     "Piauí",
+     1577304,
+     569090
+    ],
+    [
+     "BR_RJ",
+     "Rio de Janeiro",
+     4042898,
+     5326802
+    ],
+    [
+     "BR_RN",
+     "Rio Grande do Norte",
+     1296722,
+     775176
+    ],
+    [
+     "BR_RS",
+     "Rio Grande do Sul",
+     2564748,
+     3858298
+    ],
+    [
+     "BR_RO",
+     "Rondônia",
+     282585,
+     685474
+    ],
+    [
+     "BR_RR",
+     "Roraima",
+     84415,
+     241130
+    ],
+    [
+     "BR_SC",
+     "Santa Catarina",
+     1309652,
+     3191245
+    ],
+    [
+     "BR_SE",
+     "Sergipe",
+     901444,
+     462752
+    ],
+    [
+     "BR_SP",
+     "São Paulo",
+     10715765,
+     14167183
+    ],
+    [
+     "BR_TO",
+     "Tocantins",
+     432148,
+     498299
+    ],
+    [
+     "BR_ZZ",
+     "Abroad",
+     172287,
+     158595
+    ]
+   ]
+  }
+ ]
+}

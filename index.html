@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brazil Runoff Live Model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="config.js"></script>
+<style>
+:root{
+  --bg:#f6f5f2; --panel:#ffffff; --ink:#16181d; --muted:#6b6f78; --line:#e3e1dc;
+  --flavio:#2b3a8c; --flavio-soft:#dfe3f6; --lula:#c0122d; --lula-soft:#f8dde1; --ok:#1d7a46;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#111317; --panel:#1a1d23; --ink:#eceef2; --muted:#9aa0ab; --line:#2a2e36;
+         --flavio:#7f93ff; --flavio-soft:#252c4d; --lula:#ff5b6e; --lula-soft:#4a1f27; --ok:#4cc483; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Inter,system-ui,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 16px 64px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:18px}
+h1{font-size:20px;margin:0;font-weight:700;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--panel)}
+.chip.live{color:var(--lula);border-color:var(--lula)}
+.chip.done{color:var(--ok);border-color:var(--ok)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+.hero{display:grid;grid-template-columns:1.2fr 1fr;gap:16px;margin-bottom:16px}
+@media (max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
+.label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.big{font-size:44px;font-weight:700;letter-spacing:-.02em;line-height:1.1;margin:6px 0 4px}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.range{color:var(--muted);font-size:14px}
+.prob{display:flex;height:34px;border-radius:8px;overflow:hidden;margin:10px 0 6px;font-weight:600;font-size:13px}
+.prob div{display:flex;align-items:center;padding:0 10px;white-space:nowrap;transition:width .6s}
+.pf{background:var(--flavio);color:#fff}.pl{background:var(--lula);color:#fff;justify-content:flex-end}
+.legend{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
+.strip{position:relative;height:46px;margin-top:14px}
+.strip .axis{position:absolute;left:0;right:0;top:22px;border-top:1px solid var(--line)}
+.strip .zero{position:absolute;top:8px;bottom:8px;border-left:2px solid var(--muted)}
+.strip .dot{position:absolute;top:16px;width:10px;height:10px;border-radius:50%;margin-left:-5px;opacity:.75}
+.strip .tick{position:absolute;top:32px;font-size:11px;color:var(--muted);transform:translateX(-50%)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.stat{border-top:1px solid var(--line);padding-top:8px}
+.stat b{display:block;font-size:20px}
+.call{margin-top:12px;padding:10px 12px;border-radius:8px;font-weight:600;display:none}
+h2{font-size:16px;margin:0 0 10px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font-size:12px;text-align:right;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--bg)}
+tr.sel{background:var(--flavio-soft)}
+.f{color:var(--flavio);font-weight:600}.l{color:var(--lula);font-weight:600}
+.bar{display:inline-block;width:60px;height:6px;background:var(--line);border-radius:3px;vertical-align:middle;margin-left:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--muted)}
+.tablewrap{overflow-x:auto}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+.grid2>section,.hero>div{min-width:0}
+input[type=search]{width:100%;max-width:280px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;margin-bottom:10px}
+.err{color:var(--lula);font-size:13px;margin-top:8px}
+footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Brazil presidential runoff · live model</h1>
+      <div class="sub">Flávio Bolsonaro (PL) vs Lula (PT) · October 25, 2026</div>
+    </div>
+    <div><span id="chip" class="chip">Loading</span> <span id="upd" class="sub"></span></div>
+  </header>
+
+  <section class="hero">
+    <div class="panel">
+      <div class="label">Projected two-way margin</div>
+      <div id="big" class="big">…</div>
+      <div id="range" class="range"></div>
+      <div class="strip" id="strip"><div class="axis"></div></div>
+      <div id="call" class="call"></div>
+    </div>
+    <div class="panel">
+      <div class="label">Chance of winning</div>
+      <div class="prob"><div class="pf" id="pf" style="width:50%">Flávio</div><div class="pl" id="pl" style="width:50%">Lula</div></div>
+      <div class="legend"><span>Flávio Bolsonaro</span><span>Lula</span></div>
+      <div class="stats">
+        <div class="stat"><span class="label">Vote in</span><b id="rep" class="mono">0%</b></div>
+        <div class="stat"><span class="label">States in</span><b id="sin" class="mono">0</b></div>
+        <div class="stat"><span class="label">Swing vs baseline</span><b id="sw" class="mono">0.0</b></div>
+      </div>
+      <div id="err" class="err"></div>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <h2>States</h2>
+      <div class="tablewrap"><table id="st">
+        <thead><tr><th data-k="name">State</th><th data-k="pct_in">Vote in</th><th data-k="counted_margin">Counted</th><th data-k="projected_margin">Projected</th><th data-k="baseline_margin">Baseline</th><th data-k="swing">Swing</th><th data-k="size">Votes</th></tr></thead>
+        <tbody></tbody></table></div>
+    </section>
+    <section class="panel">
+      <h2 id="mtitle">Municipalities · pick a state above</h2>
+      <input type="search" id="q" placeholder="Search municipalities">
+      <div class="tablewrap"><table id="mt">
+        <thead><tr><th>Municipality</th><th>Vote in</th><th>Counted</th><th>Projected</th><th>Baseline</th><th>Votes</th></tr></thead>
+        <tbody></tbody></table></div>
+      <div id="mnote" class="sub"></div>
+    </section>
+  </div>
+
+  <footer>
+    Margin is Flávio minus Lula as a share of the two-candidate vote, in points. Baseline: first-round results by municipality with other candidates' voters allocated to a 51-49 Flávio starting point.
+    During the count, each state's counted vote is compared with the baselines of the municipalities actually in, so early returns from one kind of place do not swing the projection. Results from civicAPI. Updates every 20 seconds.
+  </footer>
+</div>
+
+<script>
+const API = (window.API_BASE || "").replace(/\/$/, "");
+const UF = {AC:"Acre",AL:"Alagoas",AP:"Amapá",AM:"Amazonas",BA:"Bahia",CE:"Ceará",DF:"Distrito Federal",ES:"Espírito Santo",GO:"Goiás",MA:"Maranhão",MT:"Mato Grosso",MS:"Mato Grosso do Sul",MG:"Minas Gerais",PR:"Paraná",PB:"Paraíba",PA:"Pará",PE:"Pernambuco",PI:"Piauí",RJ:"Rio de Janeiro",RN:"Rio Grande do Norte",RS:"Rio Grande do Sul",RO:"Rondônia",RR:"Roraima",SC:"Santa Catarina",SE:"Sergipe",SP:"São Paulo",TO:"Tocantins",ZZ:"Abroad"};
+let states = [], sortK = "size", sortDir = -1, selUF = null, munis = [];
+const $ = id => document.getElementById(id);
+function mg(m, short){
+  if (m === null || m === undefined || isNaN(m)) return "<span class='sub'>·</span>";
+  const a = Math.abs(m).toFixed(1);
+  if (Math.abs(m) < 0.05) return "Even";
+  return m > 0 ? `<span class="f">${short ? "F" : "Flávio"} +${a}</span>` : `<span class="l">${short ? "L" : "Lula"} +${a}</span>`;
+}
+const pct = x => (100 * (x || 0)).toFixed(x > 0 && x < 0.1 ? 1 : 0) + "%";
+const num = x => (x || 0).toLocaleString("en-US");
+async function getJSON(path){ const r = await fetch(API + path, {cache: "no-store"}); if (!r.ok) throw new Error(r.status); return r.json(); }
+
+function drawStrip(pc){
+  const el = $("strip"); el.querySelectorAll(".dot,.tick,.zero").forEach(n => n.remove());
+  if (!pc || !pc.length) return;
+  let lo = Math.min(...pc, -2), hi = Math.max(...pc, 2); const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x = v => (100 * (v - lo) / (hi - lo)) + "%";
+  const z = document.createElement("div"); z.className = "zero"; z.style.left = x(0); el.appendChild(z);
+  pc.forEach(v => { const d = document.createElement("div"); d.className = "dot"; d.style.left = x(v); d.style.background = v > 0 ? "var(--flavio)" : "var(--lula)"; el.appendChild(d); });
+  const step = (hi - lo) > 16 ? 5 : 2;
+  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step){ const k = document.createElement("div"); k.className = "tick"; k.style.left = x(t); k.textContent = t === 0 ? "0" : (t > 0 ? "F+" : "L+") + Math.abs(t); el.appendChild(k); }
+}
+
+async function refresh(){
+  try{
+    const [p, s] = await Promise.all([getJSON("/api/projection"), getJSON("/api/states")]);
+    $("err").textContent = "";
+    if (!p.updated){ $("chip").textContent = "Starting"; return; }
+    const mode = p.mode;
+    $("chip").textContent = mode === "pre" ? "Pre-election forecast" : (mode === "complete" ? "Count complete" : "Counting");
+    $("chip").className = "chip" + (mode === "counting" ? " live" : mode === "complete" ? " done" : "");
+    $("upd").textContent = "Updated " + p.updated.replace(" UTC", "") + " UTC";
+    $("big").innerHTML = mg(p.margin);
+    $("range").innerHTML = `90% range: ${mg(p.p05)} to ${mg(p.p95)}`;
+    const w = p.win_prob_flavio ?? 0.5, wf = Math.round(1000 * w) / 10, wl = Math.round(1000 * (1 - w)) / 10;
+    $("pf").style.width = Math.max(wf, 6) + "%"; $("pl").style.width = Math.max(wl, 6) + "%";
+    $("pf").textContent = (wf >= 99.9 ? ">99.9" : wf <= 0.1 ? "<0.1" : wf.toFixed(1)) + "%";
+    $("pl").textContent = (wl >= 99.9 ? ">99.9" : wl <= 0.1 ? "<0.1" : wl.toFixed(1)) + "%";
+    $("rep").textContent = pct(p.reporting); $("sin").textContent = p.states_in ?? 0;
+    $("sw").innerHTML = mg(p.shift_vs_baseline, true);
+    const c = $("call");
+    if (p.call_ready){ const fl = w > 0.5; c.style.display = "block"; c.style.background = fl ? "var(--flavio-soft)" : "var(--lula-soft)"; c.style.color = fl ? "var(--flavio)" : "var(--lula)"; c.textContent = (fl ? "Flávio Bolsonaro" : "Lula") + " projected to win (model above 99.5%)"; }
+    else c.style.display = "none";
+    drawStrip(p.percentiles);
+    states = (s.states || []).map(r => ({...r, size: r.counted + r.remaining}));
+    drawStates();
+    if (selUF) loadMunis(selUF, true);
+  }catch(e){ $("err").textContent = "Could not reach the model server (" + e.message + "). Retrying."; }
+}
+
+function drawStates(){
+  const rows = [...states].sort((a, b) => { const x = a[sortK], y = b[sortK]; return (typeof x === "string" ? x.localeCompare(y) : ((x ?? -1e9) - (y ?? -1e9))) * sortDir; });
+  $("st").querySelector("tbody").innerHTML = rows.map(r => {
+    const uf = r.id.slice(3);
+    return `<tr data-uf="${uf}" class="${uf === selUF ? "sel" : ""}"><td>${r.name}</td><td class="mono">${pct(r.pct_in)}<span class="bar"><i style="width:${100 * (r.pct_in || 0)}%"></i></span></td><td>${mg(r.counted_margin)}</td><td>${mg(r.projected_margin)}</td><td>${mg(r.baseline_margin)}</td><td>${mg(r.swing, true)}</td><td class="mono">${num(r.size)}</td></tr>`;
+  }).join("");
+}
+$("st").querySelector("thead").addEventListener("click", e => { const k = e.target.dataset.k; if (!k) return; sortDir = sortK === k ? -sortDir : (k === "name" ? 1 : -1); sortK = k; drawStates(); });
+$("st").querySelector("tbody").addEventListener("click", e => { const tr = e.target.closest("tr"); if (!tr) return; selUF = tr.dataset.uf; drawStates(); loadMunis(selUF); });
+$("q").addEventListener("input", drawMunis);
+
+async function loadMunis(uf, quiet){
+  if (uf === "ZZ"){ $("mtitle").textContent = "Abroad has no municipality breakdown"; munis = []; drawMunis(); return; }
+  try{ const d = await getJSON("/api/munis/" + uf); munis = d.rows || []; $("mtitle").textContent = "Municipalities · " + (UF[uf] || uf); drawMunis(); }
+  catch(e){ if (!quiet){ munis = []; $("mtitle").textContent = "Municipalities · " + (UF[uf] || uf) + " (not available yet)"; drawMunis(); } }
+}
+function drawMunis(){
+  const q = $("q").value.trim().toLowerCase();
+  const rows = munis.filter(r => !q || r[0].toLowerCase().includes(q));
+  const shown = rows.slice(0, 200);
+  $("mt").querySelector("tbody").innerHTML = shown.map(r => `<tr><td>${r[0]}</td><td class="mono">${pct(r[1])}</td><td>${mg(r[5])}</td><td>${mg(r[4])}</td><td>${mg(r[6])}</td><td class="mono">${num(r[2] + r[3])}</td></tr>`).join("");
+  $("mnote").textContent = rows.length > 200 ? `Showing the 200 largest of ${rows.length}. Search to find others.` : "";
+}
+refresh(); setInterval(refresh, 20000);
+</script>
+</body>
+</html>

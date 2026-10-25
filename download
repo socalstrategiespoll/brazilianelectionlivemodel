@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+projection.json
+projection.json.tmp
+muni_r1.json

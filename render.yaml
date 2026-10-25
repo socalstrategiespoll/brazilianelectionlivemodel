@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: brazil-runoff-model
+    runtime: python
+    # starter keeps the poller running all night; the free plan sleeps after 15 idle minutes and stops polling
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server_br.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: POLL_SECONDS
+        value: "30"

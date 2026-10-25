@@ -1,0 +1,447 @@
+# Brazil 2026 runoff engine (state units). Margin is Flavio minus Lula, in points.
+# Adapted from the 2026 midterm engine. Two-party margin is R minus D, in points, everywhere.
+# One race at a time: prep(race) once, then project(prep, counted) every cycle.
+import json, math, os
+import numpy as np
+
+_CENT = None
+def _centroids():
+    global _CENT
+    if _CENT is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'centroids.json')
+        _CENT = json.load(open(p)) if os.path.exists(p) else {}
+    return _CENT
+
+
+_DEMO = None
+def _demographics():
+    """demographics.json: {fips: {"white":%, "black":%, "hisp":%, "asian":%, "college":%}} from the ACS. Optional: without it only the size slope is used."""
+    global _DEMO
+    if _DEMO is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demographics.json')
+        _DEMO = json.load(open(p)) if os.path.exists(p) else {}
+    return _DEMO
+
+
+LEGACY = dict(GEO_SD=3.52, GEO_KM=93.0, IDIO_SD=2.77, IDIO_C=0.97)   # pre-election kernel, kept so pre-election odds do not change
+
+# ---- tuning constants (all margin points unless noted) ----
+PRE_SD = {"House": 7.33, "Senate": 6.74, "Governor": 9.0, "President": 4.0}   # drives win probability (unchanged)
+PRE_SD_RACE = {'AK-Sen': 7.5}     # Alaska: wider than the Senate default (primary baseline, ranked-choice politics)
+# Displayed middle-90% range only: the spread of outcomes is shrunk toward the median by this factor.
+# Win probability is computed before this shrink, so it does not change.
+RANGE_SCALE = {"House": 4.0 / 7.33, "Senate": 3.5 / 6.74, "Governor": 4.5 / 9.0, "President": 1.0}
+RANGE_SCALE_RACE = {"VT-Gov": 1.0}   # Vermont keeps its full, wide range
+TAU_FLOOR = 2.0            # county-to-statewide swing SD
+HET_BASE, HET_SCALE, HET_MAX = 2.0, 8.0, 8.0   # within-county heterogeneity: base + scale*sqrt(share), capped
+OUTLIER_LAMBDA = 3.0
+FULL_TRUST_PCT = 0.25      # turnout recalibration credibility ramp (fraction of precincts)
+TURNOUT_CLAMP = (0.40, 2.50)
+TURNOUT_NOISE = 0.03      # Brazil: compulsory voting, steadier turnout       # SD of remaining-vote volume (log), scaled by share still out
+# County swing is a correlated field: shared geography + shared partisan profile + county-specific noise.
+GEO_SD, GEO_KM = 2.0, 900.0     # Brazil states: regional swing shared over ~900 km (Northeast, South, etc.)     # regional swing: SD (pts) and length scale (km); fitted by fit_swing.py on 2016-2024 county swings
+PROF_SD, PROF_PTS = 0.0, 12.0   # profile kernel did not fit (collapsed to a constant the statewide shift already absorbs), so it is off
+DEMO_SD = {"college": 1.36, "white": 1.37, "black": 0.91, "hisp": 0.58}   # swing differs by education and race: pts of swing per SD of each (vote-weighted, centred) county characteristic; first-pass, refit with fit_swing once the ACS table is in
+SLOPE_SD_NODEMO = 0.0            # off for Brazil: state size says little about swing            # size slope when a race has no demographics
+SLOPE_SD = 2.0                  # size slope with demographics on: fitted value is 1.06; raised to 2.0 as a hedge because the first counties to report are small and unrepresentative
+IDIO_SD = 2.0                  # county-specific swing, fitted
+IDIO_C = 1.01                   # extra variance for small counties: IDIO_C / sqrt(votes/1000)
+TAU_BASE = (GEO_SD**2 + PROF_SD**2 + IDIO_SD**2 + IDIO_C) ** 0.5   # slope term is not in the DerSimonian-Laird scale (it is a structured, not county-level, effect)
+BUCKET_SD = 3.0            # prior SD of a method's statewide gap vs our baseline (mail, early in-person, Election Day)
+OBS_FLOOR = 0.25           # variance floor on observed method-level margins (reporting error)
+REGIME_PRIOR = (0.55, 0.35, 0.10)   # early-first, proportional, late-first (from the MI mixture prior)
+# Counting order by state (early-first, proportional, late-first), from how each state has reported in recent general elections.
+# Most states post early and mail ballots first, then Election Day. Pennsylvania, Wisconsin and Michigan count mail late or in batches.
+STATE_REGIME = {"TX": (0.80, 0.15, 0.05), "FL": (0.80, 0.15, 0.05), "NC": (0.85, 0.10, 0.05), "GA": (0.80, 0.15, 0.05),
+                "NV": (0.70, 0.20, 0.10), "OH": (0.80, 0.15, 0.05), "SC": (0.80, 0.15, 0.05), "CO": (0.75, 0.20, 0.05),
+                "OR": (0.85, 0.10, 0.05), "WA": (0.75, 0.20, 0.05), "IA": (0.70, 0.20, 0.10), "MO": (0.70, 0.20, 0.10),
+                "PA": (0.15, 0.30, 0.55), "WI": (0.30, 0.30, 0.40), "MI": (0.30, 0.35, 0.35)}
+ORDER = {"em": 0, "mail": 0, "early": 0, "eip": 1, "ed": 2, "lm": 3}
+CALL_PROB = 0.995          # a race is only flagged call-ready above this (or below 1 minus this)
+METHOD_REGIME_STATE = 0.5   # weight every method county gets on a regime county's counting-order prior (rest is by distance)
+METHOD_REGIME_TEMPER = 0.6  # discount: counting order is shared within a state but not identical county to county
+REG_TRUST_FLOOR = 0.20   # share counted below which a no-feed county's own margin counts for almost nothing
+REG_FULL_TRUST = 0.80    # share counted at which it is trusted as reported
+METHOD_REGIME_CAP = 5.0     # max log-odds the method counties can move the regime prior
+ORDER_SD_ADJ = 1.0          # same, for states whose counted vote is adjusted for which municipalities are in (counted[f][5] is True)
+ORDER_SD = 3.0              # Brazil: shared counting-order bias (pts) on the uncounted vote in states that have started reporting
+MODEL_ERR = 0.3             # pts SD of final-margin error that no county count can remove (late provisionals, corrections, feed glitches); only applied once counting has started
+REF_SD = {"college": 10.8, "white": 12.6, "black": 7.2, "hisp": 5.5, "lnT": 1.2}   # typical within-state vote-weighted SD of each characteristic (from the fit), so a few-county district is not re-standardised against itself
+Z_CLIP = 2.5                # a county can sit at most this many SDs from the race average on size or demographics (stops tiny counties in few-county districts getting huge variance)
+DL_PRIOR_N = 6.0            # pseudo-counties of prior weight on the fitted county-swing spread
+KSC_MAX = 3.0               # most the live data can inflate the county-swing variance
+N_SIMS = 4000
+
+
+def _norm_logpdf(x, mu, var):
+    return -0.5 * (np.log(2 * np.pi * var) + (x - mu) ** 2 / var)
+
+
+def prep(race):
+    """Baseline arrays for one race, recentred so the county aggregate equals VoteHub's headline margin."""
+    rows = race["counties"]
+    fips = [r[0] for r in rows]
+    names = [r[1] for r in rows]
+    D = np.array([r[2] for r in rows], float)
+    R = np.array([r[3] for r in rows], float)
+    T = np.maximum(D + R, 1.0)
+    marg = (R - D) / T * 100.0
+    agg = (R.sum() - D.sum()) / max(T.sum(), 1.0) * 100.0
+    b = np.clip(marg + (race["headline"] - agg), -100, 100)
+    bks = sorted(race.get("buckets") or [], key=lambda x: ORDER.get(x["key"], 9))
+    if bks:
+        idx = {x["key"]: j for j, x in enumerate(race["buckets"])}
+        sh = np.array([race["shares"][x["key"]] for x in bks], float)
+        sh = sh / sh.sum()
+        M = np.zeros((len(rows), len(bks)))
+        for k, x in enumerate(bks):
+            col = [r[4 + idx[x["key"]]] if len(r) > 4 + idx[x["key"]] else None for r in rows]
+            M[:, k] = [b[i] if v is None else v for i, v in enumerate(col)]
+        M += (b - M @ sh)[:, None]          # reconcile buckets to the county baseline
+        M = np.clip(M, -100, 100)
+        keys = [x["key"] for x in bks]
+    else:
+        sh = np.array([1.0]); M = b[:, None].copy(); keys = ["all"]
+    share = T / T.sum()
+    het = np.minimum(HET_MAX, HET_BASE + HET_SCALE * np.sqrt(share))
+    cen = _centroids()
+    have = all(f in cen for f in fips)
+    if have:
+        ll = np.array([cen[f] for f in fips])
+        kx = (ll[:, 0] * 111.32 * math.cos(math.radians(ll[:, 1].mean())))
+        ky = ll[:, 1] * 110.57
+        d2 = (kx[:, None] - kx[None, :]) ** 2 + (ky[:, None] - ky[None, :]) ** 2
+        Kg = GEO_SD ** 2 * np.exp(-d2 / (2 * GEO_KM ** 2))
+        Kg0 = LEGACY['GEO_SD'] ** 2 * np.exp(-d2 / (2 * LEGACY['GEO_KM'] ** 2))
+    else:
+        Kg = np.zeros((len(fips), len(fips))); Kg0 = Kg.copy()
+    db = (b[:, None] - b[None, :]) ** 2
+    idio = IDIO_SD ** 2 + IDIO_C / np.sqrt(T / 1000.0)
+    idio0 = LEGACY['IDIO_SD'] ** 2 + LEGACY['IDIO_C'] / np.sqrt(T / 1000.0)
+    lt = np.log(np.maximum(T, 1.0)); lt_m = float(share @ lt)
+    xs = np.clip((lt - lt_m) / REF_SD['lnT'], -Z_CLIP, Z_CLIP)
+    Kslope = SLOPE_SD_NODEMO ** 2 * np.outer(xs, xs)
+    dm = _demographics(); Kdemo = np.zeros((len(fips), len(fips))); used_demo = []
+    if dm and sum(1 for f in fips if f in dm) >= 0.8 * len(fips):
+        for feat, sdv in DEMO_SD.items():
+            v = np.array([float(dm[f][feat]) if f in dm and dm[f].get(feat) is not None else np.nan for f in fips])
+            mu = float(np.nansum(share * np.where(np.isnan(v), 0, v)) / max(share[~np.isnan(v)].sum(), 1e-9))
+            v = np.where(np.isnan(v), mu, v)
+            sdw = float(np.sqrt(share @ (v - mu) ** 2))
+            if sdw < 1e-6: continue
+            x = np.clip((v - mu) / REF_SD[feat], -Z_CLIP, Z_CLIP)
+            Kdemo += sdv ** 2 * np.outer(x, x); used_demo.append(feat)
+    Kslope = Kslope * ((SLOPE_SD / SLOPE_SD_NODEMO) ** 2 if used_demo else 1.0)       # Kslope was built with SLOPE_SD_NODEMO; with real demographics only the fitted residual size slope is kept
+    Kbase_t = Kg + PROF_SD ** 2 * np.exp(-db / (2 * PROF_PTS ** 2)) + np.diag(idio)
+    Kbase0 = Kg0 + PROF_SD ** 2 * np.exp(-db / (2 * PROF_PTS ** 2)) + np.diag(idio0)   # legacy kernel, without the size slope: used before any votes are counted so pre-election odds are unchanged
+    Kbase = Kbase_t + Kslope + Kdemo
+    if not have:
+        Kbase = Kbase + GEO_SD ** 2 * np.eye(len(fips)); Kbase0 = Kbase0 + LEGACY['GEO_SD'] ** 2 * np.eye(len(fips))
+    return dict(id=race["id"], label=race["label"], type=race["type"], fips=fips, names=names, T=T, b=b,
+                sh=sh, M=M, keys=keys, share=share, het=het, K=Kbase, K0=Kbase0, demo=used_demo, headline=race["headline"],
+                state=race.get("state"), no_prob=bool(race.get("no_prob")), top4=race.get("top4"), pre_sd=PRE_SD_RACE.get(race["label"], PRE_SD.get(race["type"], 7.5)),
+                range_scale=RANGE_SCALE_RACE.get(race["label"], RANGE_SCALE.get(race["type"], 0.55)))
+
+
+def _regime_fill(n, V, reverse):
+    """Counted votes n (per county) fill the buckets V (counties x K) in reporting order."""
+    Vo = V[:, ::-1] if reverse else V
+    cum = np.cumsum(Vo, axis=1) - Vo
+    fill = np.clip(n[:, None] - cum, 0, Vo)
+    return fill[:, ::-1] if reverse else fill
+
+
+def _wmedian(x, w):
+    o = np.argsort(x); x, w = x[o], w[o]
+    c = np.cumsum(w)
+    return float(x[np.searchsorted(c, c[-1] / 2)])
+
+
+def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
+    """counted: {fips: (D, R, pct_reporting)} or {fips: (D, R, pct_reporting, {bucket_key: (D, R)})}.
+    A county with the 4th element has observed counts by vote method: the engine reads the buckets directly.
+    A county without it falls back to inferring which methods have been counted (early first / proportional / late first)."""
+    rng = np.random.default_rng(seed)
+    nC = len(P["fips"]); T = P["T"]; K = len(P["keys"]); keys = P["keys"]
+    cD = np.zeros(nC); cR = np.zeros(nC); p = np.zeros(nC)
+    nk = np.zeros((nC, K)); mk_R = np.zeros((nC, K)); mk_D = np.zeros((nC, K)); has_m = np.zeros(nC, bool)
+    for i, f in enumerate(P["fips"]):
+        v = counted.get(f)
+        if not v: continue
+        if len(v) > 3 and v[3] and K > 1:
+            for j, key in enumerate(keys):
+                if key in v[3]:
+                    mk_D[i, j], mk_R[i, j] = v[3][key]
+            nk[i] = mk_D[i] + mk_R[i]
+            if nk[i].sum() > 0:
+                has_m[i] = True
+                cD[i], cR[i] = mk_D[i].sum(), mk_R[i].sum()
+                p[i] = v[2] if v[2] else 0.0
+                continue
+        if (v[0] + v[1]) > 0:
+            cD[i], cR[i], p[i] = v[0], v[1], v[2]
+    n = cD + cR
+    rep = n > 0
+    madj = np.array([bool(counted.get(f)) and len(counted[f]) > 5 and bool(counted[f][5]) for f in P["fips"]]) & rep
+    # counts-only method feeds: counted ballots per bucket with no margins (counted[f][4] = {bucket: ballots}).
+    # Which ballot types are in the count is known, so the counting order is observed instead of inferred.
+    cnt_c = np.zeros((nC, K)); has_c = np.zeros(nC, bool)
+    for i, f in enumerate(P["fips"]):
+        v = counted.get(f)
+        if v and len(v) > 4 and v[4] and K > 1 and not has_m[i] and n[i] > 0:
+            for j, key in enumerate(keys):
+                cnt_c[i, j] = max(float(v[4].get(key, 0)), 0.0)
+            has_c[i] = cnt_c[i].sum() > 0
+    obs_c = cnt_c * (n / np.maximum(cnt_c.sum(1), 1.0))[:, None]
+    p_eff = np.where(rep, np.clip(np.where(p > 0, p, 0.05), 0.02, 1.0), 0.0)
+    done = rep & (p_eff >= 0.995)
+
+    # --- turnout recalibration ---
+    ratio = np.ones(nC); w = np.minimum(1.0, p_eff / FULL_TRUST_PCT)
+    g = 1.0
+    if rep.any():
+        impl = np.where(rep, n / np.maximum(p_eff, 1e-6), 0.0)
+        r_c = np.clip(impl / T, *TURNOUT_CLAMP)
+        g = _wmedian(r_c[rep], (T * w)[rep] + 1e-9)
+        ratio = np.where(rep, w * r_c + (1 - w) * g, g)
+    Tp = np.maximum(T * ratio, n)
+    Tp = np.where(done, n, Tp)
+    V = Tp[:, None] * P["sh"][None, :]                      # expected votes per bucket
+    V = np.where(has_m[:, None], np.maximum(V, nk), V)      # a bucket can't have fewer votes than already counted
+    V = np.where(has_c[:, None], np.maximum(V, obs_c), V)   # same for counts-only counties
+    Tp = np.where(has_c, V.sum(1), Tp)
+    Tp = np.where(has_m, V.sum(1), Tp)
+    Tp = np.where(done, n, Tp)
+    rem = np.maximum(Tp - n, 0.0)
+    Mm = P["M"] / 100.0
+    pk = np.clip(nk / np.maximum(V, 1.0), 0.02, 1.0)        # share of each bucket counted (observed counties)
+    rem_k = np.where(has_m[:, None], np.where(done[:, None], 0.0, np.maximum(V - nk, 0.0)), 0.0)
+
+    # --- regime-inferred counties: counted ballots drawn in order (early first), proportional, or reversed ---
+    fills = [_regime_fill(n, V, False),
+             V * np.where(Tp > 0, np.minimum(n / np.maximum(Tp, 1), 1), 0)[:, None],
+             _regime_fill(n, V, True)]
+    if has_c.any():   # every regime sees the observed fill for these counties, so their counting order is not inferred
+        fills = [np.where(has_c[:, None], obs_c, f_) for f_ in fills]
+    pred = np.stack([100 * (f * Mm).sum(1) / np.maximum(n, 1) for f in fills])
+    RM = np.stack([((V - f) * Mm).sum(1) for f in fills])
+    pri = np.array([1.0, 0.0, 0.0]) if K == 1 else np.array(STATE_REGIME.get(P.get("state"), REGIME_PRIOR))
+    prop_rem = V * (1 - np.where(Tp > 0, np.minimum(n / np.maximum(Tp, 1), 1), 0))[:, None]   # remaining votes if proportional
+
+    # --- mixed coverage: what the method counties reveal about counting order, applied to the counties without method data ---
+    # Each method county shows its true early/Election-Day mix at its current % counted. Compare that with what each
+    # regime (early-first / proportional / late-first) would have produced; pool across method counties (statewide
+    # rules plus nearer-neighbour weight) and use the result as the regime prior for counties that report only totals.
+    pri_c = np.tile(pri[:, None], (1, nC)); mcov = 0
+    if K > 1 and has_m.any() and (rep & ~has_m).any():
+        ok = has_m & (p_eff < 0.97) & (n > 0)
+        if ok.any():
+            f_obs = nk[:, 0] / np.maximum(n, 1)
+            f_r = np.stack([fl[:, 0] / np.maximum(n, 1) for fl in fills])
+            sdc = np.sqrt(np.maximum(f_obs * (1 - f_obs), 0.02) / np.maximum(n, 1) + 0.06 ** 2)
+            Lj = -0.5 * ((f_obs[None, :] - f_r) / sdc[None, :]) ** 2
+            Lj = np.where(ok[None, :], Lj, 0.0)
+            Kg_ = P["K"] - np.diag(np.diag(P["K"]))
+            prox = np.clip(Kg_ / max(GEO_SD ** 2, 1e-9), 0, 1)
+            W = METHOD_REGIME_STATE + (1 - METHOD_REGIME_STATE) * prox
+            W[:, ~ok] = 0.0
+            pooled = METHOD_REGIME_TEMPER * np.einsum('rj,ij->ri', Lj, W)
+            pooled = np.clip(pooled - pooled.max(0), -METHOD_REGIME_CAP, 0)
+            pc_ = np.log(np.maximum(pri, 1e-12))[:, None] + pooled
+            pc_ -= pc_.max(0); pc_ = np.exp(pc_); pc_ /= pc_.sum(0)
+            pri_c = pc_; mcov = int(ok.sum())
+
+    # --- observations ---
+    q = P["het"] ** 2
+    pcap = np.clip(p_eff, 0.02, 0.995)
+    mo = np.where(rep, 100 * (cR - cD) / np.maximum(n, 1), 0.0)
+    samp = 1e4 * (1 - (mo / 100) ** 2) / np.maximum(n, 1)
+    # a county with no method feed is only trusted on its own numbers near REG_FULL_TRUST: below that, its remaining
+    # ballots (often Election Day, not yet reported) are treated as mostly unknown, so the deduced estimate carries more weight
+    pcap_reg = np.clip((pcap - REG_TRUST_FLOOR) / (REG_FULL_TRUST - REG_TRUST_FLOOR), 0.03, 1.0)
+    pcap_reg = np.where(pcap >= 0.995, 1.0, np.minimum(pcap_reg, np.where(pcap >= REG_FULL_TRUST, 1.0, 0.97)))
+    pcap_reg = np.where(madj, pcap, pcap_reg)        # municipality-adjusted states: the mix of counted places is known, so trust grows with the share counted
+    v_reg = np.where(rep & ~has_m, samp + q * (1 - pcap_reg) / pcap_reg, 1e9)
+    y_r = mo[None, :] - pred
+    mob = np.where(nk > 0, 100 * (mk_R - mk_D) / np.maximum(nk, 1), 0.0)
+    sampb = 1e4 * (1 - (mob / 100) ** 2) / np.maximum(nk, 1)
+    pkb = np.minimum(pk, 0.995)
+    vb = np.where(nk > 0, np.maximum(sampb + q[:, None] * (1 - pkb) / pkb, OBS_FLOOR), np.inf)
+    yb = np.where(nk > 0, mob - P["M"], 0.0)
+    ob_mask = nk > 0
+    wn = np.where(ob_mask, nk, 0.0)
+    y_obs_c = (wn * yb).sum(1) / np.maximum(wn.sum(1), 1)
+    v_obs_c = np.where(has_m, (wn ** 2 * np.where(ob_mask, vb, 0.0)).sum(1) / np.maximum(wn.sum(1), 1) ** 2, 1e9)
+
+    Kb = P["K"] if rep.any() else P["K0"]
+    sd0_sq = max(P["pre_sd"] ** 2 - float(P["share"] @ Kb @ P["share"]), (0.5 * P["pre_sd"]) ** 2)
+    nth = 1 + (K if K > 1 else 0)
+    prior_prec = np.array([1 / sd0_sq] + ([1 / BUCKET_SD ** 2] * K if K > 1 else []))
+    tau = TAU_BASE
+    ksc = 1.0
+    theta = np.zeros(nth); Vth = np.diag(1 / prior_prec)
+    wr = np.tile(pri[:, None], (1, nC)); yc = y_r[0].copy(); vc = v_reg.copy()
+    reg_ok = rep & ~has_m
+    # observation units: one per regime county, one per (method county, bucket)
+    u_c, u_X, u_y, u_v = [], [], [], []
+    def build_units(yc_, vc_, damp_):
+        cs, Xs, ys, vs = [], [], [], []
+        for i in np.nonzero(reg_ok)[0]:
+            x = np.zeros(nth); x[0] = 1
+            cs.append(i); Xs.append(x); ys.append(yc_[i]); vs.append(vc_[i] / damp_[i])
+        for i in np.nonzero(has_m)[0]:
+            for j in np.nonzero(ob_mask[i])[0]:
+                x = np.zeros(nth); x[0] = 1
+                if K > 1: x[1 + j] = 1
+                cs.append(i); Xs.append(x); ys.append(yb[i, j]); vs.append(vb[i, j] / damp_[i])
+        return np.array(cs, int), np.array(Xs), np.array(ys), np.array(vs)
+    damp = np.ones(nC)
+    cs = np.zeros(0, int); Xs = np.zeros((0, nth)); ys = np.zeros(0); vs = np.zeros(0)
+    for _ in range(4):
+        s_mu, s_var = theta[0], Vth[0, 0]
+        if not rep.any(): break
+        Kc = ksc * Kb
+        kdiag = np.diag(Kc)
+        # the method counties' learned bucket gaps B explain part of a regime county's margin: remove it under each regime
+        if K > 1:
+            B_mu = theta[1:]; B_var = np.diag(Vth)[1:]
+            fr = [f_ / np.maximum(n, 1)[:, None] for f_ in fills]
+            gadj = np.stack([(a_ * B_mu[None, :]).sum(1) for a_ in fr]); gvar = np.stack([(a_ ** 2 * B_var[None, :]).sum(1) for a_ in fr])
+        else:
+            gadj = np.zeros((3, nC)); gvar = np.zeros((3, nC))
+        y_a = y_r - gadj
+        ll = np.stack([np.log(np.maximum(pri_c[r], 1e-12)) + _norm_logpdf(y_a[r], s_mu, v_reg + gvar[r] + kdiag + s_var) for r in range(3)])
+        ll -= ll.max(0)
+        wr = np.exp(ll); wr /= wr.sum(0)
+        yc = (wr * y_a).sum(0)
+        vc = v_reg + (wr * gvar).sum(0) + (wr * (y_a - yc) ** 2).sum(0)
+        yagg = np.where(has_m, y_obs_c, yc); vagg = np.where(has_m, v_obs_c, vc)
+        z = np.abs(yagg - s_mu) / np.sqrt(vagg + kdiag)
+        damp = np.where(z > OUTLIER_LAMBDA, (OUTLIER_LAMBDA / np.maximum(z, 1e-9)) ** 2, 1.0)
+        cs, Xs, ys, vs = build_units(yc, vc, damp)
+        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs)
+        SiX = np.linalg.solve(Sig, Xs); Siy = np.linalg.solve(Sig, ys)
+        A = np.diag(prior_prec).astype(float) + Xs.T @ SiX
+        Vth = np.linalg.inv(A); theta = Vth @ (Xs.T @ Siy)
+        k_rep = int(rep.sum())
+        if k_rep >= 3:   # DerSimonian-Laird heterogeneity across reporting counties (total county swing, regional part included)
+            wi = np.where(rep, 1 / np.maximum(vagg, 1e-6), 0)
+            ybar = (wi * yagg).sum() / wi.sum()
+            Q = (wi * (yagg - ybar) ** 2).sum()
+            den = wi.sum() - (wi ** 2).sum() / wi.sum()
+            tau_dl = math.sqrt(max(0.0, (Q - (k_rep - 1)) / den)) if den > 0 else 0.0
+            raw = max(1.0, (tau_dl / TAU_BASE) ** 2)
+            wdl = (k_rep - 1) / (k_rep - 1 + DL_PRIOR_N)          # few reporting counties: the spread estimate is noisy, so lean on the fitted prior
+            ksc = min(KSC_MAX, 1.0 + wdl * (raw - 1.0))
+            tau = TAU_BASE * math.sqrt(ksc)
+    s_mu, s_var = float(theta[0]), float(Vth[0, 0])
+    Kc = ksc * Kb
+
+    # --- Monte Carlo ---
+    L = np.linalg.cholesky(Vth + 1e-9 * np.eye(nth))
+    TH = theta[None, :] + rng.normal(0, 1, (n_sims, nth)) @ L.T
+    S = TH[:, :1]
+    B = TH[:, 1:] if K > 1 else np.zeros((n_sims, K))
+    # correlated county swing field, conditioned on the observations and on the sampled statewide shift / method gaps
+    if len(cs):
+        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs)
+        KS = Kc[:, cs]
+        G = np.linalg.solve(Sig, KS.T).T                       # C x m
+        Sig_u = Kc - G @ KS.T
+        R_ = ys[None, :] - TH @ Xs.T                          # sims x m
+        mu_u = R_ @ G.T                                       # sims x C
+    else:
+        Sig_u = Kc; mu_u = np.zeros((n_sims, nC))
+    Lu = np.linalg.cholesky(Sig_u + 1e-8 * np.eye(nC))
+    U = mu_u + rng.normal(0, 1, (n_sims, nC)) @ Lu.T
+    Uc_mean = mu_u.mean(0)
+    # regime counties: uncounted precincts in a partly counted county are a different mix than the counted ones
+    mixv = np.where(reg_ok, q * pcap / (1 - pcap), 0.0)
+    Sc = S + U + rng.normal(0, 1, (n_sims, nC)) * np.sqrt(mixv)[None, :]
+    u = rng.random((n_sims, nC))
+    cw = np.cumsum(wr, axis=0)
+    reg = (u > cw[0][None, :]).astype(int) + (u > cw[1][None, :]).astype(int)
+    RMs = np.take_along_axis(np.broadcast_to(RM.T[None], (n_sims, nC, 3)), reg[:, :, None], 2)[:, :, 0]
+    bterm = (prop_rem[None, :, :] * B[:, None, :]).sum(2) / 100 if K > 1 else 0.0
+    f = np.exp(rng.normal(0, TURNOUT_NOISE, (n_sims, nC)) * (1 - p_eff)[None, :])
+    f = np.where(done[None, :], 1.0, f)
+    reg_part = f * (RMs + rem[None, :] * Sc / 100 + bterm)
+    obs_part = 0.0
+    if has_m.any():
+        mix_sd = np.sqrt(q[:, None] * np.minimum(pk, 0.9) / (1 - np.minimum(pk, 0.9)))
+        E_k = rng.normal(0, 1, (n_sims, nC, K)) * mix_sd[None]
+        shift_k = S[:, :, None] + B[:, None, :] + U[:, :, None] + E_k
+        rem_votes_m = (rem_k[None] * (P["M"][None] + shift_k) / 100).sum(2)
+        obs_part = np.where(has_m[None, :], f * rem_votes_m, 0.0)
+        reg_part = np.where(has_m[None, :], 0.0, reg_part)
+    fm = (cR - cD).sum() + (reg_part + obs_part).sum(1)
+    rem_started = float((f.mean(0) * rem * (rep & ~madj)).sum()) if rep.any() else 0.0
+    rem_adj = float((f.mean(0) * rem * madj).sum()) if rep.any() else 0.0
+    fm = fm + rng.normal(0, ORDER_SD, n_sims) * rem_started / 100 + rng.normal(0, ORDER_SD_ADJ, n_sims) * rem_adj / 100
+    ft = n.sum() + (f * rem[None, :]).sum(1)
+    final = 100 * fm / np.maximum(ft, 1)
+    if rep.any():       # unremovable error shrinks as the count finishes: full size until ~8% of votes remain, small once complete
+        remfrac = float(rem.sum() / max(n.sum() + rem.sum(), 1.0))
+        final = final + rng.normal(0, MODEL_ERR * min(1.0, 0.2 + remfrac / 0.1), n_sims)
+    if not rep.any():   # nothing counted: center the forecast exactly on the baseline margin (removes Monte Carlo and turnout-weight drift)
+        final = final + (P["headline"] - np.median(final))
+    win = float(((final > 0).mean() + (final == 0).mean() / 2))
+    med = float(np.median(final))
+    final_d = med + (final - med) * P["range_scale"]          # display range only; win probability above uses the full spread
+    pc = np.percentile(final_d, [5, 25, 50, 75, 95])
+    exp_total = float(Tp.sum())
+    frac = float(n.sum() / exp_total) if exp_total else 0.0
+    t4 = None
+    if P.get("top4"):        # top-four races: first-round shares and the chance each major candidate clears 50%
+        cfg = P["top4"]; cs = cfg["cands"]
+        m0 = sum(c["share"] for c in cs if not c.get("side")) / 100.0
+        obs = (extra or {}).get("minor_share")          # observed combined minor share from the feed, when it lists more than two candidates
+        w = min(1.0, frac / 0.6) if obs is not None else 0.0
+        mu = (w * obs if obs is not None else 0.0) + (1 - w) * m0; sdm = max(0.002, cfg["minor_sd"] / 100.0 * (1 - w))
+        msim = np.clip(np.random.default_rng(seed + 1).normal(mu, sdm, len(final)), 0.005, 0.25)
+        Dsh = (1 - final / 100.0) / 2.0; Rsh = (1 + final / 100.0) / 2.0
+        sims = {}
+        for c in cs:
+            if c.get("side") == "D": sims[c["name"]] = (1 - msim) * Dsh * 100
+            elif c.get("side") == "R": sims[c["name"]] = (1 - msim) * Rsh * 100
+            else: sims[c["name"]] = msim * (c["share"] / max(m0 * 100.0, 1e-9)) * 100
+        mj = [c["name"] for c in cs if c.get("side")]
+        t4 = dict(shares={k: round(float(np.median(v)), 2) for k, v in sims.items()},
+                  p05={k: round(float(np.percentile(v, 5)), 2) for k, v in sims.items()},
+                  p95={k: round(float(np.percentile(v, 95)), 2) for k, v in sims.items()},
+                  p_over_50={k: round(float((sims[k] > 50).mean()), 4) for k in mj},
+                  p_neither=round(float(((sims[mj[0]] <= 50) & (sims[mj[1]] <= 50)).mean()), 4),
+                  minor_share=round(float(mu * 100), 2))
+    counties = []
+    for i in range(nC):
+        pm = None; rmm = None
+        if Tp[i] > 0:
+            if has_m[i]:
+                rm = (rem_k[i] * (P["M"][i] + theta[0] + (theta[1:] if K > 1 else 0) + Uc_mean[i])).sum() / 100
+            else:
+                rm = (wr[:, i] * RM[:, i]).sum() + rem[i] * (theta[0] + Uc_mean[i]) / 100
+            pm = float(100 * ((cR[i] - cD[i]) + rm) / Tp[i])
+            rmm = float(100 * rm / rem[i]) if rem[i] > 1 else None
+        cm = float(100 * (cR[i] - cD[i]) / n[i]) if n[i] > 0 else None
+        # [fips, name, pct in, counted, remaining, projected final margin, has method data, county swing,
+        #  counted D, counted R, projected margin of remaining votes, margin of counted votes]
+        counties.append([P["fips"][i], P["names"][i], round(float(p_eff[i]), 3), int(n[i]), int(rem[i]),
+                         None if pm is None else round(pm, 2), bool(has_m[i]), round(float(Uc_mean[i]), 2),
+                         int(cD[i]), int(cR[i]), None if rmm is None else round(rmm, 2), None if cm is None else round(cm, 2)])
+    state = "complete" if (rep.sum() == nC and done.all()) else ("counting" if rep.any() else "pre")
+    n_reg = rep & ~has_m
+    no_prob = bool(P.get("no_prob"))     # margin-only races (Alaska, RCV): no win probability, never call-ready
+    return dict(id=P["id"], label=P["label"], state=state, win_prob_R=None if no_prob else round(win, 4),
+                margin=round(float(pc[2]), 2), p05=round(float(pc[0]), 2), p25=round(float(pc[1]), 2),
+                p75=round(float(pc[3]), 2), p95=round(float(pc[4]), 2), reporting=round(frac, 4),
+                shift=round(s_mu, 2), shift_sd=round(math.sqrt(s_var), 2), tau=round(tau, 2),
+                bucket_gap=({k: round(float(theta[1 + j]), 2) for j, k in enumerate(keys)} if K > 1 else {}),
+                counties_with_method_data=int(has_m.sum()),
+                turnout_ratio=round(float(g), 3),
+                regimes=[round(float(x), 3) for x in (wr[:, n_reg].mean(1) if n_reg.any() else pri)],
+                regime_prior_from_method=[round(float(x), 3) for x in (pri_c[:, n_reg].mean(1) if n_reg.any() else pri)],
+                method_counties_informing=mcov,
+                top4=t4,
+                call_ready=(not no_prob) and bool(win >= CALL_PROB or win <= 1 - CALL_PROB) and state != "pre",
+                counties=counties,
+                percentiles=[round(float(x), 2) for x in np.percentile(final_d, np.linspace(2, 98, 25))])
