@@ -138,7 +138,7 @@ footer{color:var(--muted);font-size:12.5px;margin-top:22px;line-height:1.6}
     <section class="panel">
       <h2>States</h2>
       <div class="tablewrap"><table id="st">
-        <thead><tr><th data-k="name">State</th><th data-k="pct_in">Vote in</th><th data-k="counted_margin">Counted</th><th data-k="projected_margin">Projected</th><th data-k="baseline_margin">Baseline</th><th data-k="swing">Swing</th><th data-k="size">Votes</th></tr></thead>
+        <thead><tr><th data-k="name">State</th><th data-k="pct_in">Vote in</th><th data-k="counted_margin">Counted</th><th data-k="adjusted_margin" title="Counted margin corrected for which municipalities have reported">Adjusted</th><th data-k="projected_margin">Projected</th><th data-k="baseline_margin">Baseline</th><th data-k="swing">Swing</th><th data-k="size">Votes</th></tr></thead>
         <tbody></tbody></table></div>
     </section>
     <section class="panel">
@@ -222,7 +222,7 @@ function drawStates(){
   const rows = [...states].sort((a, b) => { const x = a[sortK], y = b[sortK]; return (typeof x === "string" ? x.localeCompare(y) : ((x ?? -1e9) - (y ?? -1e9))) * sortDir; });
   $("st").querySelector("tbody").innerHTML = rows.map(r => {
     const uf = r.id.slice(3);
-    return `<tr data-uf="${uf}" class="${uf === selUF ? "sel" : ""}"><td>${r.name}</td><td class="mono">${pct(r.pct_in)}<span class="bar"><i style="width:${100 * (r.pct_in || 0)}%"></i></span></td><td>${mg(r.counted_margin)}</td><td>${mg(r.projected_margin)}</td><td>${mg(r.baseline_margin)}</td><td>${mg(r.swing, true)}</td><td class="mono">${num(r.size)}</td></tr>`;
+    return `<tr data-uf="${uf}" class="${uf === selUF ? "sel" : ""}"><td>${r.name}</td><td class="mono">${pct(r.pct_in)}<span class="bar"><i style="width:${100 * (r.pct_in || 0)}%"></i></span></td><td>${mg(r.counted_margin)}</td><td>${mg(r.adjusted_margin)}</td><td>${mg(r.projected_margin)}</td><td>${mg(r.baseline_margin)}</td><td>${mg(r.swing, true)}</td><td class="mono">${num(r.size)}</td></tr>`;
   }).join("");
 }
 $("st").querySelector("thead").addEventListener("click", e => { const k = e.target.dataset.k; if (!k) return; sortDir = sortK === k ? -sortDir : (k === "name" ? 1 : -1); sortK = k; drawStates(); });
@@ -290,8 +290,8 @@ function matchMunis(uf, feats){
   const byName = {}; munis.forEach(r => byName[r[0]] = r);
   return {size: names.size, get: f => byName[names.get(f)]};
 }
-function tipHTML(name, pIn, cnt, proj, base){
-  return `<b>${name}</b>Projected ${mg(proj)}<br>Counted ${mg(cnt)} &middot; ${pct(pIn)} in<br><span class="sub">Baseline ${mg(base)}</span>`;
+function tipHTML(name, pIn, cnt, proj, base, adj){
+  return `<b>${name}</b>Projected ${mg(proj)}<br>Counted ${mg(cnt)} &middot; ${pct(pIn)} in${adj !== undefined && adj !== null ? `<br>Adjusted ${mg(adj)}` : ""}<br><span class="sub">Baseline ${mg(base)}</span>`;
 }
 function render(features, getVal, getTip, onClick){
   const box = $("map"); box.querySelector("svg")?.remove();
@@ -314,7 +314,7 @@ async function drawMap(){
       $("maptitle").textContent = "Brazil by state"; $("back").style.display = "none";
       $("mapnote").textContent = "Click a state to see its municipalities.";
       if (drawnKey !== "BR") { render(geoStates.features, f => valueOfState(stateRow(f.properties.sigla)),
-        f => { const r = stateRow(f.properties.sigla); return r ? tipHTML(r.name, r.pct_in, r.counted_margin, r.projected_margin, r.baseline_margin) : f.properties.name; },
+        f => { const r = stateRow(f.properties.sigla); return r ? tipHTML(r.name, r.pct_in, r.counted_margin, r.projected_margin, r.baseline_margin, r.adjusted_margin) : f.properties.name; },
         f => { selUF = f.properties.sigla; drawStates(); openState(selUF); }); drawnKey = "BR"; }
       else recolor();
     } else {
