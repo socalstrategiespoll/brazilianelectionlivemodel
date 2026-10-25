@@ -9,9 +9,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "muni_r1.json")
 UA = {"User-Agent": "socal-strategies-model/1.0"}
 
-def fetch(rid, timeout=20):
-    with urllib.request.urlopen(urllib.request.Request(f"https://civicapi.org/api/v2/race/{rid}", headers=UA), timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+def fetch(rid, timeout=20, tries=1):
+    for k in range(tries):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"https://civicapi.org/api/v2/race/{rid}", headers=UA), timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception:
+            if k == tries - 1: raise
+            time.sleep(1.5 * (k + 1))
 
 def _col(name):
     n = (name or "").lower()
@@ -32,14 +37,16 @@ def load_r1(refresh=False, sleep=0.15):
         return json.load(open(CACHE, encoding="utf-8"))
     out = {}
     for rid in R1_IDS:
-        d = fetch(rid); uf = uf_of(d); rows = {}
+        try: d = fetch(rid, timeout=30, tries=4)
+        except Exception as e: print("first round fetch failed", rid, e, flush=True); continue
+        uf = uf_of(d); rows = {}
         for reg in (d.get("region_results") or {}).values():
             if reg.get("type") != "Municipality": continue
             v = [0] * 8
             for c in reg.get("candidates") or []: v[_col(c.get("name"))] += c.get("votes") or 0
             rows[reg["name"]] = v
         out[uf] = rows; time.sleep(sleep)
-    json.dump(out, open(CACHE, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
+    if len(out) == 27: json.dump(out, open(CACHE, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
     return out
 
 def baseline(r1, alloc, state_rows):
