@@ -44,6 +44,7 @@ def cycle(race, P, last):
                 counted[key] = (n * (1 - adj / 100) / 2, n * (1 + adj / 100) / 2, st[2], None, None, True)
                 STATE["muni_status"][uf] = "ok: raw %+.1f, mix-adjusted %+.1f, %d places in%s" % (raw, adj, len(ms), (", %d unmatched" % len(miss)) if miss else "")
         counted, w = civicapi_feed.sanitize(counted, race, MEM)
+        counted = civicapi_feed.pct_from_votes(dict(counted), dict(race, pct_from_votes=True))   # feed shows 0% with votes in: use votes / expected
         STATE["warn"] = w
     except Exception as e:
         err = str(e)[:150]
@@ -94,7 +95,9 @@ def init_munis(race):
         r1 = muni.load_r1()
         BASE = muni.baseline(r1, race["alloc"], {c[0]: c for c in race["counties"]})
         for rid in muni.R2_IDS:
-            d = _safe(rid)
+            if rid in STATE_RACE.values(): continue
+            try: d = muni.fetch(rid, tries=3)
+            except Exception: d = None
             if d: STATE_RACE[muni.uf_of(d)] = rid
         print("municipality baseline:", sum(len(v) for v in BASE.values()), "places;", len(STATE_RACE), "state races", flush=True)
     except Exception as e:
@@ -102,9 +105,11 @@ def init_munis(race):
 
 def poller(race, P):
     init_munis(race)          # in the background so the port opens right away (Render health check)
-    last = None
+    last = None; n_cycle = 0
     while True:
-        t = time.time()
+        t = time.time(); n_cycle += 1
+        if (len(BASE) < 27 or len(STATE_RACE) < 27) and n_cycle % 4 == 0:   # layer incomplete: try again every ~2 minutes
+            init_munis(race)
         try: last = cycle(race, P, last)
         except Exception as e: print("cycle failed:", e, flush=True)
         print("cycle", round(time.time() - t, 1), "s", STATE["projection"].get("margin"), STATE["projection"].get("reporting"), flush=True)
