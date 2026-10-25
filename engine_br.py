@@ -63,6 +63,9 @@ METHOD_REGIME_TEMPER = 0.6  # discount: counting order is shared within a state 
 REG_TRUST_FLOOR = 0.20   # share counted below which a no-feed county's own margin counts for almost nothing
 REG_FULL_TRUST = 0.80    # share counted at which it is trusted as reported
 METHOD_REGIME_CAP = 5.0     # max log-odds the method counties can move the regime prior
+SHARED_EARLY_SD = 8.0       # Brazil: early batches in every state can lean the same way. Shared error (pts) on counted margins of states at 0% in ...
+SHARED_EARLY_SD_ADJ = 3.0   # ... smaller for municipality-adjusted states ...
+SHARED_EARLY_GONE = 0.6     # ... fading linearly to zero at this share counted
 ORDER_SD_ADJ = 1.0          # same, for states whose counted vote is adjusted for which municipalities are in (counted[f][5] is True)
 ORDER_SD = 3.0              # Brazil: shared counting-order bias (pts) on the uncounted vote in states that have started reporting
 MODEL_ERR = 0.3             # pts SD of final-margin error that no county count can remove (late provisionals, corrections, feed glitches); only applied once counting has started
@@ -297,6 +300,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
                 if K > 1: x[1 + j] = 1
                 cs.append(i); Xs.append(x); ys.append(yb[i, j]); vs.append(vb[i, j] / damp_[i])
         return np.array(cs, int), np.array(Xs), np.array(ys), np.array(vs)
+    shw = np.where(madj, SHARED_EARLY_SD_ADJ, SHARED_EARLY_SD) * np.clip(1 - pcap / SHARED_EARLY_GONE, 0, 1) * rep
     damp = np.ones(nC)
     cs = np.zeros(0, int); Xs = np.zeros((0, nth)); ys = np.zeros(0); vs = np.zeros(0)
     for _ in range(4):
@@ -321,7 +325,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
         z = np.abs(yagg - s_mu) / np.sqrt(vagg + kdiag)
         damp = np.where(z > OUTLIER_LAMBDA, (OUTLIER_LAMBDA / np.maximum(z, 1e-9)) ** 2, 1.0)
         cs, Xs, ys, vs = build_units(yc, vc, damp)
-        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs)
+        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs) + np.outer(shw[cs], shw[cs])
         SiX = np.linalg.solve(Sig, Xs); Siy = np.linalg.solve(Sig, ys)
         A = np.diag(prior_prec).astype(float) + Xs.T @ SiX
         Vth = np.linalg.inv(A); theta = Vth @ (Xs.T @ Siy)
@@ -346,7 +350,7 @@ def project(P, counted, n_sims=N_SIMS, seed=7, extra=None):
     B = TH[:, 1:] if K > 1 else np.zeros((n_sims, K))
     # correlated county swing field, conditioned on the observations and on the sampled statewide shift / method gaps
     if len(cs):
-        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs)
+        Sig = Kc[np.ix_(cs, cs)] + np.diag(vs) + np.outer(shw[cs], shw[cs])
         KS = Kc[:, cs]
         G = np.linalg.solve(Sig, KS.T).T                       # C x m
         Sig_u = Kc - G @ KS.T
