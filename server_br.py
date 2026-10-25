@@ -64,6 +64,9 @@ def cycle(race, P, last):
         with open(OUT + ".tmp", "w") as f: json.dump(STATE["projection"], f, separators=(",", ":"))
         os.replace(OUT + ".tmp", OUT)
     STATE["error"] = err
+    with LOCK:
+        STATE["projection"]["checked"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())   # every cycle, even when no new votes
+        STATE["projection"]["feed_error"] = err
     return key
 
 
@@ -118,7 +121,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         p = self.path.split("?")[0]
-        if p == "/health": return self._send(200, {"ok": True, "updated": STATE["projection"]["updated"]})
+        if p == "/health": return self._send(200, {"ok": True, "updated": STATE["projection"]["updated"], "checked": STATE["projection"].get("checked")})
         if p == "/api/projection":
             with LOCK: return self._send(200, STATE["projection"])
         if p == "/api/race":
